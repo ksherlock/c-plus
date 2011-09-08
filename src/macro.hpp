@@ -138,7 +138,7 @@ private:
 		definition = nullptr; // clear the "registers" to avoid confusing re-scanning
 		
 		std::vector< arg_info > args_info; // size = param count
-		if ( function_like && def.front() != pp_constants::rparen ) { // identify arguments
+		if ( function_like ) { // identify arguments
 			args_info.resize( std::find( def.begin(), def.end(), pp_constants::rparen ) - def.begin() );
 			pp_tokens::const_iterator arg_pen = args.begin() + 1; // skip open paren
 			
@@ -167,7 +167,10 @@ private:
 			-- arg_pen;
 			if ( info != args_info.end() ) throw error( arg_pen->p, "Too few arguments to macro." );
 			if ( arg_pen != args.end() - 1 ) {
-				if ( args_info.size() == 0 || def[ args_info.size() - 1 ] != pp_constants::variadic ) {
+				if ( args_info.size() == 0 ) {
+					skip_space( ++ arg_pen );
+					if ( arg_pen != args.end() - 1 ) throw error( arg_pen->p, "Macro does not accept any argument." );
+				} else if ( def[ args_info.size() - 1 ] != pp_constants::variadic ) {
 					throw error( arg_pen->p, "Too many arguments to macro." );
 				} else {
 					-- info;
