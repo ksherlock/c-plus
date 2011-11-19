@@ -4,81 +4,112 @@
 #ifndef CPLUS_UTIL
 #define CPLUS_UTIL
 
+#include <memory>
 #include <iterator>
 #include <stdexcept>
 #include <functional>
 #include <type_traits>
+#include <cstring>
 #include <ctime>
 
-#include <typeinfo>
-
-#include "formats.h"
+// This kind of enumeration is scoped by default but unscoped for inheriting classes.
+// It implicitly converts to int, since it's really just a C++03 hack.
+// "Importable" means you can import it, not the antonym of "portable."
+#define CPLUS_IMPORTABLE_ENUM( TYPENAME, ... ) \
+struct TYPENAME ## _import_base \
+	{ enum TYPENAME { __VA_ARGS__, TYPENAME ## _last }; }; \
+typedef TYPENAME ## _import_base :: TYPENAME TYPENAME;
 
 namespace cplus {
+
+using std::rel_ops::operator!=;
+
 namespace util {
 
-template< typename t > // provide symmetry with std::move
-typename std::remove_cv< typename std::remove_reference< t >::type >::type copy( t &&o )
-	{ return o; }
+struct abc { inline virtual ~abc() = 0; };
+abc::~abc() = default;
+
+template< typename t > // provide symmetry with std::ref
+typename std::decay< t >::type val( t &&o )
+	{ return std::forward< t >( o ); }
+
+void *align( std::size_t alignment, std::size_t size, void *&ptr, std::size_t &space ) {
+	auto pn = reinterpret_cast< std::size_t >( ptr );
+	auto aligned = pn + alignment - 1 & - alignment;
+	auto new_space = space - ( aligned - pn );
+	if ( new_space < size ) return nullptr;
+	space = new_space;
+	return ptr = reinterpret_cast< void * >( aligned );
+}
 
 template< typename ftor >
 struct output_iterator_from_functor
-	: std::iterator< std::output_iterator_tag, void, void, void, void >,
-	ftor {
+	: ftor,
+	std::iterator< std::output_iterator_tag, void, void, void, void > {
+	typedef std::true_type overrides_ref;
+	
 	template< typename ... args >
 	output_iterator_from_functor( args && ... a )
-		: ftor( std::forward< args >( a )... ) {}
+		: ftor( std::forward< args >( a ) ... ) {}
 
 	template< typename value_type > // performs insertion, is not the move assignment operator
 	output_iterator_from_functor &operator=( value_type &&o )
 		{ (*this)( std::forward< value_type >( o ) ); return *this; }
-	output_iterator_from_functor &operator*() { return *this; }
-	output_iterator_from_functor &operator++() { return *this; }
-	output_iterator_from_functor &operator++(int) { return *this; }
-
-	friend void finalize( output_iterator_from_functor< ftor > &o )
-		{ finalize( static_cast< ftor & >( o ) ); }
+	
+	friend output_iterator_from_functor &operator*( output_iterator_from_functor &o ) { return o; } // is own object
+	friend output_iterator_from_functor &operator++( output_iterator_from_functor &o ) { return o; } // just no-ops:
+	friend output_iterator_from_functor &operator++( output_iterator_from_functor &o, int ) { return o; }
 };
 
 template< typename ftor >
 output_iterator_from_functor< ftor > make_output_iterator( ftor &&f )
-	{ return { std::move( f ) }; }
+	{ return { std::forward< ftor >( f ) }; }
 
 template< typename output_iterator >
 struct output_iterator_ref
-	: std::iterator< std::output_iterator_tag, void, void, void, void >,
-	std::reference_wrapper< output_iterator > {
+	: std::reference_wrapper< output_iterator >,
+	std::iterator< std::output_iterator_tag, void, void, void, void > {
 	
 	output_iterator_ref( output_iterator &in )
 		: std::reference_wrapper< output_iterator >( in ) {}
-	decltype( * std::declval<output_iterator_ref>().get() ) operator*() { return * this->get(); }
-	output_iterator_ref &operator++() { ++ this->get(); return *this; }
+	
+	operator output_iterator & () { return this->get(); } // provides ++ and *; incompatible with member operator overloads
 };
-
-/*	Since no copy of i can exist, postincrement can at best work like preincrement.
-	This is still good though, since operator= performs increment on such iterators. */
-template< typename ftor >
-output_iterator_ref< output_iterator_from_functor< ftor > > &
-operator++( output_iterator_ref< output_iterator_from_functor< ftor > > &r, int ) { r.get() ++; return r; }
-
-template< typename output_iterator > // this seems very broken, and accepts perfect forwarding ctors as copy ctors
-typename std::enable_if< std::is_copy_constructible< output_iterator >::value,
-	output_iterator >::type
-operator++( output_iterator_ref< output_iterator > &r, int ) { return r.get() ++; }
 
 template< typename ftor >
 output_iterator_ref< output_iterator_from_functor< ftor > >
 ref( output_iterator_from_functor< ftor > &i )
 	{ return { i }; }
 
-/*	There is no reason to take a reference of a copyable iterator. Presume that all iterators besides
-	output_iterator_from_functor are copyable, and return a copy, not a reference. The other way should work, too. */
-template< typename output_iterator >
-typename std::enable_if< std::is_base_of< std::output_iterator_tag,
-						typename std::iterator_traits< output_iterator >::iterator_category >::value, 
-	output_iterator >::type
-ref( output_iterator &i )
-	{ return { i }; }
+template< typename t >
+struct rvalue_reference_wrapper : std::reference_wrapper< t > {
+	rvalue_reference_wrapper( t &o ) : std::reference_wrapper< t >( o ) {}
+	t &&get() const { return static_cast< t && >( std::reference_wrapper< t >::get() ); }
+#if __GNUC__ // Workaround to enable implicit user-defined conversion in bind call.
+	operator t&& () const volatile { return const_cast< rvalue_reference_wrapper const * >( this )->get(); }
+#else
+	operator t&& () const { return get(); }
+#endif
+	operator t& () const = delete;
+};
+
+template< typename t >
+rvalue_reference_wrapper< t > rref( t &o ) { return { o }; }
+
+template< typename bound >
+struct implicit_thunk {
+	bound f;
+	operator typename std::result_of< bound() >::type () { return f(); }
+};
+
+template< typename bound >
+implicit_thunk< typename std::decay< bound >::type > make_implicit_thunk( bound &&f )
+	{ return { std::forward< bound >( f ) }; }
+
+struct poor_conversion {
+	template< typename t >
+	poor_conversion( t const & ) {}
+};
 
 template< typename output_iterator >
 class limit_range_ftor {
@@ -109,38 +140,40 @@ template< typename output_iterator >
 output_iterator_from_functor< limit_range_ftor< output_iterator > >
 limit_range( output_iterator &&iter ) { return { std::move( iter ) }; }
 
-class wstring_convert { // emulate §22.3.3.2.2, not yet implemented in G++
-	char32_t min, result;
+class utf8_convert {
+	char32_t min;
 	int len;
 public:
-	wstring_convert() : len( 0 ) {}
-	std::u32string from_bytes( uint8_t c ) {
+	char32_t result;
+	
+	utf8_convert() : len( 0 ) {}
+	bool in( std::uint8_t c ) {
+		if ( len != 0 || c >= 0x80 ) return non_ascii( c );
+		result = c;
+		return true;
+	}
+	bool non_ascii( std::uint8_t c ) {
 		if ( len == 0 ) {
 			if ( c >= 0xC0 ) {
 				if ( c == 0xFF ) malformed: {
 					throw std::range_error( "malformed UTF-8" );
 				}
 				len = 1;
-				for ( uint8_t cback = c; cback & 0x20; cback <<= 1 ) {
+				for ( std::uint8_t cback = c; cback & 0x20; cback <<= 1 ) {
 					++ len;
 				}
 				result = ( c + ( 0x80 >> len ) ) & 0xFF;
 				min = 1 << ( len > 1? len * 5 + 1 : 7 ); // lowest acceptible end result
-				return {};
-			
-			} else if ( c >= 0x80 ) {
-				goto malformed;
-			} else {
-				return { c }; // common case - it's ASCII
-			}
+				return false;
+			} else goto malformed;
 		} else {
 			if ( c < 0x80 || c >= 0xC0 ) goto malformed;
 			result = result << 6 | ( c & 0x3F );
 			if ( -- len == 0 ) {
 				if ( result < min ) goto malformed;
-				return { result };
+				return true;
 			
-			} else return {};
+			} else return false;
 		}
 	}
 };

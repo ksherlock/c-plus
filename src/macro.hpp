@@ -4,322 +4,377 @@
 #include "util.h"
 #include "formats.h"
 #include "constants.h"
-#include "phase_1_2.hpp"
 #include "phase_3.hpp"
 
 #include <map>
-#include <iterator>
+#include <unordered_map>
+#include <scoped_allocator>
 
 namespace cplus {
 
 template< typename output_iterator >
-class macro_context {
-	output_iterator cont; // where to send results of substitution
+class substitution_phase;
+
+struct macro_context_info { // information that determines how macros are expanded, shared between contexts
+	phase3_config const &token_config;
 	
+	typedef std::unordered_map< string, tokens const > name_map;
+	name_map macros;
+	struct presumptions { // Specific to current file, errors result if not empty and macro invokation spans EOF.
+		std::int32_t line_displacement; // controlled by #line directive
+		token filename; // also set by #line; if empty, use token::source
+	} presumed;
+};
+
+template< typename output_iterator > // either another macro_context (via std::function) or a macro_filter
+class macro_context : public stage< output_iterator > {
+	typedef macro_context_info::name_map name_map;
+	macro_context_info const &common; // points to sibling subobject of phase4 next to root context
+
+	typedef std::vector< string const * > call_stack;
+	name_map::const_pointer definition; // function-like macro awaiting call
+protected:
+	tokens input; // buffered arguments or scratch storage
+	std::size_t paren_depth; // determines when to call macro
+
 public:
-	typedef std::map< std::string, pp_tokens > name_map;
-	typedef std::vector< std::string const * > call_stack; // used only to prevent recursion
-	
 	template< typename ... input >
-	macro_context( name_map const &in_macros, call_stack &in_callers, input && ... a )
-		: cont( std::forward< input >( a ) ... ),
-		definition( nullptr ), paren_depth( 0 ),
-		macros( in_macros ), callers( in_callers ) {}
+	macro_context( macro_context_info const &common_info, input && ... a )
+		: macro_context::stage( std::forward< input >( a ) ... ), common( common_info ),
+		definition( nullptr ), paren_depth( 0 ) {}
 	
-	macro_context( macro_context && ) = delete;
-	macro_context( macro_context const & ) = delete;
-	
-	void flush() {
-		if ( paren_depth != 0 ) throw error( input.front().p, "Unterminated macro invokation." );
-		if ( ! input.empty() ) {
-			if ( definition && ! is_function_like( * definition ) ) {
-				replace(); // side effect: ignores, clears input
-			} else {
-				std::move( input.begin(), input.end(), util::ref( cont ) );
-			}
-			input.clear();
+	void flush() { call_stack callers; return flush( callers ); }
+	void flush( call_stack &callers ) {
+		replace_object_completely( callers );
+		if ( paren_depth != 0 ) {
+			throw error( input[ input.front().type == token_type::ws ], "Unterminated macro invokation." );
 		}
+		if ( input.size() > 3 ) throw error( input.back(), "ICE: too much input at flush." );
+		std::move( input.begin(), input.end(), util::ref( this->cont ) );
+		input.clear();
 		definition = nullptr;
 	}
-	friend void finalize( macro_context &o ) {
-		o.flush();
-		finalize( o.cont );
-	}
-	~macro_context()
-		{ if ( ! input.empty() ) throw error( input.front().p, "ICE: Flush macro_context before destroying." ); }
 	
-	void operator() ( pp_token const &in )
-		{ return (*this)( util::copy( in ) ); } // copy input if not called with std::move
+	void operator() ( token const &in, call_stack &&callers = call_stack() ) // copy input if not called with std::move
+		{ return (*this) ( util::val( in ), std::move( callers ) ); }
 	
-	/*	operator() trims whitespace, buffers input, and calls macros. It doesn't trim placemarkers and recursion stops.
+	/*	operator() trims whitespace, buffers input, and calls macros. It doesn't trim recursion stops.
 		replace() sends results back to it by co-recursion, which implements rescanning and further replacement. */
-	void operator() ( pp_token &&in ) {
-		bool stop_recursion = false;
-		if ( in.type == pp_token_type::id ) { // perform this check before argument gets moved
-			for ( auto caller : callers ) if ( * caller == in.s ) {
-				stop_recursion = true;
-				break;
+	void operator() ( token &&in, call_stack &&callers = call_stack() ) {
+		bool stop_recursion = false; // perform this check before argument gets moved
+		if ( in.type == token_type::id ) {
+			for ( auto caller : callers ) {
+				if ( * caller == in.s ) stop_recursion = true;
 			}
 		}
-
 		if ( paren_depth == 0 ) {
 			if ( definition ) {
-				if ( is_function_like( * definition ) ) {
-					if ( in == pp_constants::lparen ) {
-						input = { in }; // forget non-call token now that we have a function call
-						paren_depth = 1;
-						return;
-					} else if ( in.type == pp_token_type::ws ) {
-						goto queue_space;
-					}
-				} else if ( in == pp_constants::recursion_stop ) {
+				if ( in == pp_constants::recursion_stop ) {
 					definition = nullptr; // Abort macro call. Recursion_stop token will be passed through.
+				
+				} else if ( ! is_function_like( * definition ) ) { // Call the object-like macro.
+					replace_object_completely( callers ); // May set definition to a function-like macro.
 				}
-			} else if ( in.type == pp_token_type::ws ) queue_space: {
-				if ( input.empty() || input.back() != pp_constants::space ) {
-					input.push_back( std::move( in ) ); // preserve whitespace after non-called function
+				if ( definition && is_function_like( * definition ) && in == pp_constants::lparen ) { // function call
+					goto got_lparen; // Keep open paren, just for consistency.
 				}
-				return;
-			}
-			flush(); // call the queued object-like macro, if any, else flush the input buffer
-			name_map::const_iterator def;
-			if ( in.type == pp_token_type::id && ( def = macros.find( in.s ) ) != macros.end() ) {
-				definition = &* def;
-				input.push_back( std::move( in ) ); // remember name in case macro isn't called
+			} // Now, if definition is set, it's a function-like macro still awaiting "(".
 			
-			} else * cont ++ = std::move( in ); // common case: not in any part of an invokation.
+			if ( in.type == token_type::ws ) goto condense_space;
+			else {
+				name_map::const_iterator def;
+				if ( in.type == token_type::id && ( def = common.macros.find( in.s ) ) != common.macros.end() ) {
+					if ( definition ) { // Flush uncalled function-like macro. Save trailing space.
+						tokens::iterator flush_end = input.end() - ( input.back().type == token_type::ws );
+						std::move( input.begin(), flush_end, util::ref( this->cont ) );
+						input.erase( input.begin(), flush_end );
+					}
+					definition = &* def;
+					input.push_back( std::move( in ) ); // Remember name in case macro isn't called.
+				} else {
+					flush( callers ); // Clear any uncalled function, or just flush whitespace. No object macro here.
+					* this->cont ++ = std::move( in ); // Common case: not in any part of an invokation, pass through.
+				}
+			}
 		} else {
 			if ( in == pp_constants::lparen ) {
+		got_lparen:
 				++ paren_depth;
-			} if ( in == pp_constants::rparen ) {
+				input.push_back( std::move( in ) );
+			} else if ( in == pp_constants::rparen ) {
 				input.push_back( std::move( in ) );
 				-- paren_depth;
-				if ( paren_depth == 0 ) replace();
-				return;
+				if ( paren_depth == 0 ) replace( callers );
+			} else if ( in == pp_constants::recursion_stop && input.back() == pp_constants::recursion_stop ) {
+				// trim consecutive recursion stops
+			} else
+		condense_space:
+			if ( in.type != token_type::ws || input.empty() || input.back().type != token_type::ws ) {
+				input.push_back( std::move( in ) );
+			} else if ( common.token_config.preserve_space ) {
+				input.back().s.open();
+				input.back().s += in.s.c_str();
 			}
-			input.push_back( std::move( in ) );
 		}
 		if ( stop_recursion ) {
-			return (*this)( pp_constants::recursion_stop ); // tail recurse, append artificial input
+			return (*this)( pp_constants::recursion_stop, std::move( callers ) ); // tail recurse, insert artificial input
 		}
 	}
 	
 protected:
-	name_map::const_pointer definition; // function-like macro awaiting call
-	pp_tokens input; // buffered arguments or scratch storage
-	std::size_t paren_depth; // determines when to call macro
-	
+	enum class presumption { line, file };
+	token get_location( token const &in, presumption kind ) {
+		token const *t = & in;
+		try {
+			while ( typeid( * t->source.get() ) != typeid (inclusion) ) {
+				if ( auto subst = dynamic_cast< macro_substitution * >( t->source.get() ) ) {
+					t = & subst->arg_begin[ t->location ]; // resolve an argument to its own value, not whole expansion
+				} else {
+					t = & t->source->source;
+				}
+			}
+		} catch ( std::bad_typeid & ) { throw error( in, "ICE: Failed to evaluate __LINE__ or __FILE__." ); }
+		
+		if ( kind == presumption::line ) {
+			std::int32_t logical_line = std::int32_t( t->location & file_location::line_mask ) + common.presumed.line_displacement;
+			return { token_type::num, { std::to_string( logical_line ).c_str(), common.token_config.stream_pool } };
+		} else {
+			if ( common.presumed.filename == token() ) {
+				return { token_type::string_lit, static_cast< inclusion const & >( * t->source ).file_name,
+							t->source->source.source, t->source->source.location };
+			} else {
+				return common.presumed.filename;
+			}
+		}
+	}
 private:
-	name_map const &macros; // reference to the calling phase4 object
-	call_stack &callers; // nested evaluation stack, always empty except during evaluation
-	
-	static pp_tokens::const_pointer skip_space( pp_tokens::const_iterator &it )
-		{ return it->type == pp_token_type::ws? &* it ++ : nullptr; }
+	template< typename i > // either tokens::iterator or tokens::const_iterator
+	static typename std::iterator_traits< i >::pointer skip_space( i &it )
+		{ return it->type == token_type::ws? &* it ++ : nullptr; }
 	
 	static bool is_function_like( name_map::const_reference definition )
-		{ return definition.second[0].type != pp_token_type::ws; }
+		{ return definition.second[0].type != token_type::ws; }
 	
-	void replace() {
+	void replace_object_completely( call_stack &callers )
+		{ while ( definition && ! is_function_like( * definition ) ) replace( callers ); }
+	
+	void replace( call_stack &callers ) {
 		struct arg_info {
-			pp_tokens::const_iterator begin, end;
-			std::size_t evaluated_begin, evaluated_end;
-		
+			tokens::const_iterator begin, end;
+			
 			void trim_begin() // erase whitespace at start
 				{ macro_context::skip_space( begin ); }
 			void trim_end() // erase whitespace at end
-				{ if ( end != begin && end[ -1 ].type == pp_token_type::ws ) -- end; }
+				{ if ( end != begin && end[ -1 ].type == token_type::ws ) -- end; }
 		};
 		
-		pp_tokens const args( std::move( input ) ), &def = definition->second;
-		pp_tokens args_evaluated;
 		bool function_like = is_function_like( * definition );
-		callers.push_back( & definition->first );
-		input.clear();
-		definition = nullptr; // clear the "registers" to avoid confusing re-scanning
-		
 		std::vector< arg_info > args_info; // size = param count
-		if ( function_like ) { // identify arguments
+		tokens::iterator input_pen = input.begin();
+		bool leading_space = skip_space( input_pen );
+		token name( std::move( * input_pen ) );
+		if ( function_like ) skip_space( ++ input_pen ); // ignore space between name and paren
+		
+		// save macro name and arguments, or special replacement list, in persistent instantiation object
+		auto inst = definition->first == pp_constants::line_macro.s || definition->first == pp_constants::file_macro.s?
+			std::make_shared< macro_replacement >( std::move( name ), tokens{ pp_constants::space,
+				get_location( name, definition->first == pp_constants::line_macro.s? presumption::line : presumption::file ) } )
+			: std::make_shared< macro_replacement >( std::move( name ), definition->second,
+				tokens{ std::move_iterator< tokens::iterator >{ input_pen }, std::move_iterator< tokens::iterator >{ input.end() } } );
+		input.erase( input.begin() + leading_space, input.end() );
+		tokens const &def = inst->replacement;
+		
+		if ( function_like ) { //									======================== IDENTIFY ARGUMENTS ===
+			auto arg_pen = inst->args.begin();
 			args_info.resize( std::find( def.begin(), def.end(), pp_constants::rparen ) - def.begin() );
-			pp_tokens::const_iterator arg_pen = args.begin() + 1; // skip open paren
-			
-			macro_context< std::back_insert_iterator< pp_tokens > >
-				nested( macros, callers, args_evaluated );
-			
 			auto info = args_info.begin();
-			for ( ; info != args_info.end() && arg_pen != args.end(); ++ info, ++ arg_pen ) {
+			for ( ++ arg_pen; info != args_info.end() && arg_pen != inst->args.end(); ++ info, ++ arg_pen ) {
 				info->begin = arg_pen;
-				info->evaluated_begin = args_evaluated.size();
-				
-				for ( ; arg_pen != args.end() - 1; ++ arg_pen ) {
+				for ( ; arg_pen != inst->args.end() - 1; ++ arg_pen ) {
 					if ( * arg_pen == pp_constants::comma && paren_depth == 0 ) break; // usual exit
 					else if ( * arg_pen == pp_constants::lparen ) ++ paren_depth;
 					else if ( * arg_pen == pp_constants::rparen ) -- paren_depth;
-		redo_variadic:
-					nested( * arg_pen );
+		extend_variadic: ;
 				} // arg_pen points to comma or final close paren (final paren balance is guaranteed)
-				
-				nested.flush();
-				
 				info->end = arg_pen;
-				info->evaluated_end = args_evaluated.size();
 			}
 			
 			-- arg_pen;
-			if ( info != args_info.end() ) throw error( arg_pen->p, "Too few arguments to macro." );
-			if ( arg_pen != args.end() - 1 ) {
+			if ( info != args_info.end() ) throw error( * arg_pen, "Too few arguments to macro." );
+			if ( arg_pen != inst->args.end() - 1 ) {
 				if ( args_info.size() == 0 ) {
 					skip_space( ++ arg_pen );
-					if ( arg_pen != args.end() - 1 ) throw error( arg_pen->p, "Macro does not accept any argument." );
-				} else if ( def[ args_info.size() - 1 ] != pp_constants::variadic ) {
-					throw error( arg_pen->p, "Too many arguments to macro." );
-				} else {
+					if ( arg_pen != inst->args.end() - 1 ) throw error( * arg_pen, "Macro does not accept any argument." );
+				} else if ( def[ args_info.size() - 1 ] == pp_constants::variadic ) {
 					-- info;
-					goto redo_variadic;
-				}
+					goto extend_variadic; // continue from where the comma broke the loop
+				} else throw error( * arg_pen, "Too many arguments to macro." );
 			}
 		}
+		callers.push_back( & definition->first ); // Register in call stack before rescanning.
+		definition = nullptr; // Clear the "registers" to avoid confusing rescanning.
 		
 		// obtain iterator access to self
-		auto local( util::make_output_iterator( ref( * this ) ) );
+		auto local( util::make_output_iterator( std::bind( ref( * this ), std::placeholders::_1, util::rref( callers ) ) ) );
 		
-		// Use a local copy of phases 1-3 to generate tokens one at a time as intermediate results.
-		pp_token acc[ 2 ];
+		// Use a local copy of phase 3 to generate tokens one at a time as intermediate results.
+		token acc[ 2 ]; // [0] is LHS, [1] is RHS from stringize or LHS recursion stop
 		auto acc_limiter( util::limit_range( &* acc ) ); // actual range specified at each use
-		auto acc_it = util::make_output_iterator( [&]( pp_token &&t )
-			{ if ( t.type != pp_token_type::ws ) * acc_limiter ++ = std::move( t ); } );
-		phase1_2< util::output_iterator_from_functor< phase3< decltype( acc_it ) > > > lexer( acc_it );
+		auto acc_it = util::make_output_iterator( [&]( token &&t )
+			{ if ( t.type != token_type::ws ) * acc_limiter ++ = std::move( t ); } ); // filter out whitespace
 		
 		for ( auto pen = def.begin() + args_info.size() + 1 /* skip ")" or " " */; pen != def.end(); ) {
 			/* Each iteration handles some subset of the sequence <token> ## # <token>:
 							leading_token			! leading_token
 				neither		<lhs>					-
-				stringize	-						# <arg>
+				stringize	-						# <lhs>
 				concat		<lhs> ## <rhs>			## <rhs>
-				both		<lhs> ## # <arg/rhs>	## # <arg/rhs>
+				both		<lhs> ## # <rhs>		## # <rhs>
 				This is handled as: Perhaps stringize, perhaps catenate, else macro-replace. */
 			
 			bool stringize = false, concat = false, leading_token = false, trailing_space = false;
-			pp_token const *leading_space;
+			token const *leading_space;
 			
 			leading_space = skip_space( pen ); // replacement list doesn't end with whitespace
-			if ( * pen == pp_constants::concat || * pen == pp_constants::concat_alt ) {
+			if ( pp_constants::is_concat( * pen ) ) {
 				leading_space = nullptr;
-			} else if ( ( * pen != pp_constants::stringize && * pen != pp_constants::stringize_alt )
-						|| ! function_like ) { // lead is _neither_ ## _nor_ #
-				if ( acc_limiter.base != acc ) * local ++ = std::move( * -- acc_limiter.base );
-				* acc_limiter.base ++ = * pen ++; // entire if-else block only consumes this non-operator token
+			} else if ( ! pp_constants::is_stringize( * pen ) || ! function_like ) { // lead is _neither_ ## _nor_ #
+				std::move( acc, acc_limiter.base, local );
+				acc[ 1 ] = token(); // be sure to invalidate recursion stop in acc[1]
+				acc_limiter.base = acc;
+				* acc_limiter.base ++ = instantiate( inst, pen ++ ); // only consume this non-operator token
 				if ( pen != def.end() ) trailing_space = skip_space( pen ); // and this ws
 				leading_token = true;
 			}
 			
-			if ( pen != def.end() && ( * pen == pp_constants::concat || * pen == pp_constants::concat_alt ) ) {
+			if ( pen != def.end() && pp_constants::is_concat( * pen ) ) {
 				skip_space( ++ pen ); // replacement list doesn't end with ##
 				concat = true;
 			}
 			
 			if ( function_like // disable # operator for object-like macros
 				&& ( ! leading_token || concat ) // exclude case not in above table
-				&& pen != def.end() && ( * pen == pp_constants::stringize
-									|| * pen == pp_constants::stringize_alt ) ) { //	============== STRINGIZE ===
+				&& pen != def.end() && pp_constants::is_stringize( * pen ) ) { // =================== STRINGIZE ===
 				
 				skip_space( ++ pen ); // replacement list doesn't end with #
 				stringize = true;
 				if ( ! concat ) { // flush buffered input if this isn't RHS of ##
-					if ( acc_limiter.base != acc ) * local ++ = std::move( * -- acc_limiter.base );
+					std::move( acc, acc_limiter.base, local );
+					acc[ 1 ] = token(); // be sure to invalidate recursion stop in acc[1]
 					if ( leading_space ) * local ++ = * leading_space;
 				}
-				auto arg = args_info[ std::find( def.begin(), def.end(), * pen ++ ) - def.begin() ];
+				acc_limiter.base = acc + concat; // discard and overwrite possible recursion stop
+				
+				auto arg = args_info[ std::find( def.begin(), def.end(), * pen ) - def.begin() ];
 				arg.trim_begin();
 				arg.trim_end();
 				
 				try {
+					phase3< decltype( acc_it ), false > lexer( common.token_config,
+						std::make_shared< macro_substitution >( instantiate( inst, pen ++ ), arg.begin ), acc_it );
+					
 					acc_limiter.reset( 1 );
-					lexer( '"' );
+					lexer( { '"', 0 } );
 					for ( auto pen = arg.begin; pen != arg.end; ++ pen ) {
-						for ( uint8_t c : pen->s ) {
-							if ( ( pen->type == pp_token_type::string || pen->type == pp_token_type::char_lit )
-								&& ( c == '"' || c == '\\'
+						if ( pen->type == token_type::ws && ! pen->s.empty() ) {
+							lexer( { ' ' } );
+							continue;
+						}
+						for ( std::uint8_t c : pen->s ) {
+							if ( ( pen->type == token_type::string_lit || pen->type == token_type::char_lit )
+								&& ( c == '"' || c == '\\' // escape quotes and backslashes in strings, incl. hidden in UCNs
 									|| c >= 0xC0 || ( c < 0x80 && ! char_in_set( char_set::basic_source, c ) ) ) ) {
-								lexer( '\\' ); // escape quotes and backslashes in strings, including hidden in UCNs
+								lexer( { '\\', static_cast< size_t >( pen - arg.begin ) } );
 							}
-							lexer( c );
+							lexer( { c, static_cast< size_t >( pen - arg.begin ) } );
 						}
 					}
-					lexer( '"' );
+					lexer( { '"', static_cast< size_t >( arg.end - arg.begin ) } );
 					finalize( lexer );
 				} catch ( std::range_error & ) {
 					goto stringize_wrong_count;
 				}
-				if ( acc_limiter.reset() != 1 || acc_limiter.base[-1].type != pp_token_type::string )
+				if ( acc_limiter.reset() != 1 || acc_limiter.base[-1].type != token_type::string_lit )
 				stringize_wrong_count:
-					throw error( arg.begin[ 0 ].p, "Stringize (#) did not produce one (1) result string." );
+					throw error( arg.begin[ 0 ], "Stringize (#) did not produce one (1) result string." );
 			}
 			
-			if ( concat ) { //					=================================================== CONCATENATE ===
-				pp_token const *lhs = & acc[0], *lhs_end, *rhs = &* pen, *rhs_end;
+			if ( concat ) { //													=================== CONCATENATE ===
+				if ( ! stringize ) acc[ 1 ] = instantiate( inst, pen ++ ); // if value of pen is used for RHS, increment to next token
 				
-				for ( int side = 0; side < 2; ++ side ) { // identify arguments:
-					pp_token const *&arg_begin = side? rhs : lhs, *&arg_end = side? rhs_end : lhs_end;
+				enum : int { lhs, rhs }; // [0] is LHS, [1] is RHS:
+				token const *begins[ 2 ] = { acc + 0, acc + 1 }, *ends[ 2 ] = { acc + 1, acc + 2 };
+				tokens copies[ 2 ];
+				bool stripped_stops[ 2 ] = { acc[1] == pp_constants::recursion_stop, false };
+				
+				for ( int side = 0; side < 2; ++ side ) { // expand arguments as necessary
+					if ( side? stringize : ! leading_token ) continue; // not if using intermediate result
+					size_t param_index = std::find( def.begin(), def.begin() + args_info.size(), acc[ side ] ) - def.begin();
+					if ( param_index == args_info.size() ) continue; // not if replacement list doesn't indicate a parameter
 					
-					if ( side? stringize : ! leading_token ) { // intermediate result,
-						arg_begin = & acc[ side ];
-						arg_end = arg_begin + 1;
-						if ( arg_begin->s.empty() ) arg_end = arg_begin; // handle placemarkers as empty args
-					} else {
-						auto param = std::find( def.begin(), def.begin() + args_info.size(), * arg_begin );
-						if ( param == def.begin() + args_info.size() ) { // literal,
-							arg_end = arg_begin + 1;
-						} else { // or parameter
-							arg_info arg = args_info[ param - def.begin() ];
-							side? arg.trim_begin() : arg.trim_end(); // strip ws from end of lhs and start of rhs
-							arg_begin = &* arg.begin;
-							arg_end = &* arg.end;
-						}
-						if ( side == 1 ) {
-							++ pen; // if value of pen was used for RHS, increment to next token
-						}
+					arg_info arg = args_info[ param_index ];
+					side? arg.trim_begin() : arg.trim_end(); // strip ws from end of lhs and start of rhs
+					
+					auto subst = std::make_shared< macro_substitution >( std::move( acc[ side ] ), arg.begin ); // use new instantiation obj
+					for ( auto arg_pen = arg.begin; arg_pen != arg.end; ++ arg_pen ) { // instantiate argument for use of parameter
+						copies[ side ].push_back( { arg_pen->type, arg_pen->s, subst, static_cast< size_t >( arg_pen - arg.begin ) } );
 					}
+					begins[ side ] = &* copies[ side ].begin(); // Tentatively strip recursion stops; restore if no catenation is done:
+					stripped_stops[ side ] = ! copies[ side ].empty() && copies[ side ].back() == pp_constants::recursion_stop;
+					ends[ side ] = &* copies[ side ].end() - stripped_stops[ side ];
 				}
-				if ( leading_space ) * local ++ = * leading_space;
 				
-				acc_limiter.base = & acc[ 1 ]; // tentatively set the result stack for these early exits:
-				if ( lhs == lhs_end ) {
-					if ( rhs == rhs_end ) { // both sides are empty; produce a placemarker token
-						acc[ 0 ] = pp_constants::placemarker;
+				if ( leading_space ) * local ++ = * leading_space; // preserve leading space
+				
+				acc_limiter.base = acc; // perform the paste into the intermediate result register
+				if ( begins[lhs] == ends[lhs] ) {
+					if ( begins[rhs] == ends[rhs] ) { // both sides are empty; produce a placemarker token
+						* acc_limiter.base ++ = pp_constants::placemarker;
 						continue;
 					}
-					std::copy( rhs, rhs_end - 1, local ); // LHS is empty; output the RHS
-					acc[ 0 ] = rhs_end[ -1 ];
+					std::move( begins[rhs], ends[rhs] - 1, local ); // LHS is empty; output the RHS
+					* acc_limiter.base ++ = std::move( ends[rhs][ -1 ] ); // just save the last token as intermediate result
+					if ( ! stringize && stripped_stops[rhs] ) {
+						* acc_limiter.base ++ = pp_constants::recursion_stop; // preserve stopper
+					}
 					continue;
 				}
-				std::copy( lhs, lhs_end - 1, local ); // flush the tokens before the result
+				std::move( begins[lhs], ends[lhs] - 1, local ); // flush the tokens preceding the result
 				
-				if ( rhs == rhs_end ) { // RHS is empty; already sent the LHS
-					acc[ 0 ] = lhs_end[ -1 ]; // just save the last token as intermediate result
+				if ( begins[rhs] == ends[rhs] ) { // RHS is empty; already sent the LHS
+					* acc_limiter.base ++ = std::move( ends[lhs][ -1 ] );
+					if ( stripped_stops[lhs] ) {
+						* acc_limiter.base ++ = pp_constants::recursion_stop; // preserve stopper
+					}
 					continue;
 				}
 				
 				try {
+					phase3< decltype( acc_it ), false > lexer( common.token_config, ends[0][ -1 ].source, acc_it );
+					auto pos = ends[lhs][ -1 ].location; // use LHS for position of pasted token
+					
 					acc_limiter.reset( 1 );
-					acc_limiter.base = acc; // perform the paste into the intermediate result register
-					for ( uint8_t c : util::copy( lhs_end[ -1 ].s ) ) lexer( c ); // work with copies to be
-					for ( uint8_t c : util::copy( rhs[ 0 ].s ) ) lexer( c ); // sure overwriting is safe
+					for ( std::uint8_t c : std::move( ends[lhs][ -1 ].s ) ) lexer( { c, pos } ); // move to temporaries to be
+					for ( std::uint8_t c : std::move( begins[rhs][ 0 ].s ) ) lexer( { c, pos } ); // sure overwriting acc is safe
 					finalize( lexer );
 				} catch ( std::range_error & ) {
 					goto catenate_wrong_count;
 				}
 				if ( acc_limiter.reset() != 1 ) catenate_wrong_count:
-					throw error( rhs[ 0 ].p, "Catenating tokens did not produce a single result token." );
+					throw error( begins[rhs][ 0 ], "Catenating tokens did not produce a single result token." );
 				
-				acc[ 0 ].p = lhs_end[ -1 ].p; // use LHS for position of pasted token
+				while ( ++ begins[rhs] != ends[rhs] && * begins[rhs] == pp_constants::recursion_stop ) ; // re-evaluate recursion
 				
-				if ( rhs + 1 != rhs_end ) {
+				if ( begins[rhs] != ends[rhs] ) {
 					* local ++ = std::move( acc[ 0 ] ); // flush if not an intermediate result
-					std::copy( rhs + 1, rhs_end - 1, local );
-					acc[ 0 ] = rhs_end[ -1 ]; // get a new intermediate result from RHS
+					std::copy( begins[rhs], ends[rhs] - 1, local );
+					acc[ 0 ] = ends[rhs][ -1 ]; // get a new intermediate result from end of RHS
+					if ( stripped_stops[rhs] ) {
+						* acc_limiter.base ++ = pp_constants::recursion_stop; // preserve stopper
+					}
 				}
 			
-			} else if ( leading_token ) { //	=================================================== SUBSTITUTE ===
+			} else if ( leading_token ) { //						================================ SUBSTITUTE ===
 				if ( leading_space ) * local ++ = * leading_space;
 				-- acc_limiter.base; // don't leave intermediate result
 				if ( trailing_space ) -- pen; // will be next iteration's leading_space
@@ -328,125 +383,130 @@ private:
 				if ( param == def.begin() + args_info.size() ) {
 					* local ++ = std::move( acc[ 0 ] ); // common case - copy from replacement list to output
 				} else {
-					arg_info arg = args_info[ param - def.begin() ];
+					auto caller_self = callers.back();
+					callers.pop_back(); // evaluate argument in caller's context, i.e. current name is not recursion-stopped
 					
-					std::copy( args_evaluated.begin() + arg.evaluated_begin,
-								args_evaluated.begin() + arg.evaluated_end, local );
+					macro_context< util::output_iterator_from_functor< std::function< void( token && ) > > >
+						nested( common, [&]( token &&in ) {
+							callers.push_back( caller_self ); // restore current context for rescanning
+							* local ++ = std::move( in ); // local references callers
+							callers.pop_back();
+						} );
+					
+					arg_info arg = args_info[ param - def.begin() ];
+					auto subst = std::make_shared< macro_substitution >( std::move( acc[ 0 ] ), arg.begin );
+					for ( auto arg_pen = arg.begin; arg_pen != arg.end; ++ arg_pen ) {
+						nested( token{ arg_pen->type, arg_pen->s,
+								subst, std::size_t( arg_pen - arg.begin ) }, std::move( callers ) );
+					}
+					nested.flush( callers );
+					
+					callers.push_back( caller_self );
 				}
 			}
 		}
-		if ( acc_limiter.base != acc ) * local ++ = std::move( acc[0] );
+		std::move( acc, acc_limiter.base, local );
 		callers.pop_back();
 	}
 };
 
-std::pair< std::string const, pp_tokens > normalize_macro_definition( pp_tokens &&input ) {
+macro_context_info::name_map::value_type normalize_macro_definition( tokens &&input, string_pool &macro_pool ) {
 	using pp_constants::skip_space;
 	
-	pp_tokens::iterator pen = input.begin();
+	tokens::iterator pen = input.begin() + 1; // skip leading space in input buffer
 	skip_space( pen, input.end() ); // skip directive "define"
 	
-	if ( skip_space( ++ pen, input.end() ) == input.end() || pen->type != pp_token_type::id ) {
+	if ( skip_space( ++ pen, input.end() ) == input.end() || pen->type != token_type::id ) {
 		if ( pen == input.end() ) -- pen;
-		throw error( pen->p, "Expected macro definition." );
+		throw error( * pen, "Expected macro definition." );
 	}
-	std::string name = std::move( pen ++ ->s );
-	if ( std::binary_search( pp_constants::reserved_macro_names, std::end( pp_constants::reserved_macro_names ),
-		name ) ) throw error( pen[-1].p, "Cannot define a reserved identifier (§17.6.4.3.1/2, 17.6.4.3.2/1)" );
+	string name = { pen ++ ->s, macro_pool };
 	
-	pp_tokens replacement;
+	tokens replacement;
 	size_t nargs = 0;
-	if ( pen != input.end() && pen->type != pp_token_type::ws ) {
+	if ( pen != input.end() && pen->type != token_type::ws ) {
 		if ( * pen != pp_constants::lparen )
-			throw error( pen->p, "An object-like macro definition must begin with whitespace." );
-		if ( skip_space( ++ pen, input.end() ) == input.end() ) goto parameters_unterminated;
-		if ( * pen == pp_constants::rparen ) goto parameters_done;
-		for ( ; skip_space( pen, input.end() ) != input.end(); ++ pen ) {
-			if ( * pen == pp_constants::variadic_decl ) {
-				replacement.push_back( pp_constants::variadic );
-				replacement.back().p = pen->p;
-				
-				if ( skip_space( ++ pen, input.end() ) == input.end()
-					|| * pen != pp_constants::rparen ) {
-					if ( pen == input.end() ) -- pen;
-					throw error( replacement.back().p,
-						"Variadic arguments must be declared as \"...\" at the end "
-						"of the parameter list, and then referred to as \"__VA_ARGS__\"." );
-				}
-				goto parameters_done;
-			}
-			if ( pen->type != pp_token_type::id )
-				throw error( pen->p, "Parameter name must be an identifier." );
-			if ( * pen == pp_constants::variadic )
-				throw error( pen->p, "The identifier __VA_ARGS__ is reserved (§16.3/5)." );
-			replacement.push_back( std::move( * pen ) );
+			throw error( * pen, "An object-like macro definition must begin with whitespace (§16.3/3)." );
+		while ( * pen != pp_constants::rparen ) {
 			if ( skip_space( ++ pen, input.end() ) == input.end() ) parameters_unterminated:
-				throw error( pen[ -1 ].p, "Unterminated parameter list." );
-			if ( * pen == pp_constants::rparen ) goto parameters_done; // NORMAL EXIT POINT
-			if ( * pen != pp_constants::comma )
-				throw error( pen->p, "Expected \",\" to separate argument declarations" );
-		} goto parameters_unterminated;
-	parameters_done:
-		replacement.push_back( std::move( * pen ++ ) ); // save ")"
+				throw error( pen[ -1 ], "Unterminated parameter list." );
+			if ( replacement.empty() && * pen == pp_constants::rparen ) break; // empty list
+			
+			if ( * pen == pp_constants::variadic )
+				throw error( * pen, "The identifier __VA_ARGS__ is reserved (§16.3/5)." );
+			if ( * pen == pp_constants::variadic_decl ) { // convert punctuator "..." to identifier "__VA_ARGS__"
+				replacement.push_back( { token_type::id, pp_constants::variadic.s, pen->source, pen->location } );
+			} else {
+				if ( pen->type != token_type::id )
+					throw error( * pen, "Parameter name must be an identifier." );
+				if ( std::find( replacement.begin(), replacement.end(), * pen ) != replacement.end() )
+					throw error( * pen, "Parameter name must be unique (§16.3/6)." );
+				//replacement.push_back( std::move( * pen ) );
+				replacement.push_back( pen->reallocate( macro_pool ) );
+			}
+			if ( skip_space( ++ pen, input.end() ) == input.end() ) goto parameters_unterminated;
+			if ( * pen != pp_constants::rparen && replacement.back() == pp_constants::variadic )
+				throw error( replacement.back(),
+					"Variadic arguments must be declared as \"...\" at the end of the parameter "
+					"list, and then referred to as \"__VA_ARGS__\" (§16.3/12, §16.3.1/2)." );
+			if ( * pen != pp_constants::rparen && * pen != pp_constants::comma )
+				throw error( * pen, "Expected \",\" to separate parameter declarations." );
+		}
+		replacement.push_back( std::move( pen ++ ->reallocate( macro_pool ) ) ); // save ")"
 		nargs = replacement.size(); // includes ")" so nonzero if function-like
 		
-	} else replacement.push_back( pp_constants::space );
+	} else replacement.push_back( pp_constants::space ); // synthesize a space if list is truly empty
 	
+	if ( skip_space( pen, input.end() ) != input.end() && pp_constants::is_concat( * pen ) ) bad_cat:
+		throw error( * pen, "Concatenation (##) operator may not appear at beginning or end of a macro (§16.3.3/1)." );
+		
 	bool got_stringize = false;
 	while ( skip_space( pen, input.end() ) != input.end() ) {
 		if ( got_stringize && nargs // validate stringize operator
 			&& std::find( replacement.begin(), replacement.begin() + nargs - 1, * pen )
-				== replacement.begin() + nargs - 1 ) throw error( pen->p,
-				"Stringize (#) operator in a function-like macro may only apply to an argument." );
-		got_stringize = * pen == pp_constants::stringize || * pen == pp_constants::stringize_alt;
+				== replacement.begin() + nargs - 1 ) throw error( * pen,
+				"Stringize (#) operator in a function-like macro may only apply to an argument (§16.3.2/1)." );
+		got_stringize = pp_constants::is_stringize( * pen );
 		
 		if ( * pen == pp_constants::variadic // validate variadic usage
 			&& ( nargs < 2 || replacement[ nargs - 2 ] != pp_constants::variadic ) )
-			throw error( pen->p, "The identifier __VA_ARGS__ is reserved (§16.3/5)." );
+			throw error( * pen, "The identifier __VA_ARGS__ is reserved (§16.3/5)." );
 		
-		replacement.push_back( std::move( * pen ++ ) );
-		if ( pen != input.end() && pen->type == pp_token_type::ws ) {
-			replacement.push_back( std::move( * pen ++ ) ); // condense whitespace
+		replacement.push_back( pen ++ ->reallocate( macro_pool ) );
+		if ( pen != input.end() && pen->type == token_type::ws ) {
+			replacement.push_back( std::move( pen ++ ->reallocate( macro_pool ) ) ); // condense whitespace
 		}
 	}
+	if ( replacement.size() > 1 && replacement.back().type == token_type::ws ) replacement.pop_back();
 	
-	if ( replacement[ nargs? nargs : 1 ] == pp_constants::concat // handle object- or function-like
-		|| replacement[ nargs? nargs : 1 ] == pp_constants::concat_alt
-		|| replacement.back() == pp_constants::concat || replacement.back() == pp_constants::concat_alt )
-		throw error( replacement.back().p, "Concatenation operator may not appear at beginning or end of a macro." );
+	if ( pp_constants::is_concat( replacement.back() ) )
+		goto bad_cat;
 	
 	return { name, replacement };
 }
 
 template< typename output_iterator >
-class macro_filter {
-	output_iterator cont;
+class macro_filter : public stage< output_iterator > {
+	friend typename macro_filter::stage;
+	
 public:
 	template< typename ... args >
 	macro_filter( args && ... a )
-		: cont( std::forward< args >( a ) ... ) {}
+		: macro_filter::stage( std::forward< args >( a ) ... ) {}
 	
-	void operator() ( pp_token &&in )
-		{ if ( ! in.s.empty() ) * cont ++ = std::move( in ); } // Filter out placemarkers and recursion stops.
-	
-	friend void finalize( macro_filter &o ) { finalize( o.cont ); }
+	void operator() ( token &&in )
+		{ if ( ! in.s.empty() ) * this->cont ++ = std::move( in ); } // Filter out placemarkers and recursion stops.
 };
 
 template< typename output_iterator >
 class substitution_phase
-	: public macro_context< util::output_iterator_from_functor< macro_filter< output_iterator > > > {
-	typedef macro_context< util::output_iterator_from_functor< macro_filter< output_iterator > > > engine_type;
-protected:
-	typename engine_type::name_map macros;
-	typename engine_type::call_stack callers; // somewhat hackish, but useful when phase 4 instantiates a local engine
-	
+	: public derived_stage< macro_context< configured_stage_from_functor< macro_filter< output_iterator > > >, phase3_config >,
+	protected macro_context_info {
 public:
-	template< typename ... args >
-	substitution_phase( typename engine_type::name_map &&init_macros, args && ... a )
-		: engine_type( macros, callers, std::forward< args >( a ) ... ),
-		macros( std::move( init_macros ) ) {}
-	
-	friend void finalize( substitution_phase &o ) { finalize( static_cast< engine_type & >( o ) ); }
+	template< typename in_config_type, typename ... args >
+	substitution_phase( in_config_type &&token_config, macro_context_info::name_map &&init_macros, args && ... a )
+		: substitution_phase::derived_stage( static_cast< macro_context_info & >( * this ), std::forward< args >( a ) ... ),
+		macro_context_info{ token_config, std::move( init_macros ) } {}
 };
 
 }

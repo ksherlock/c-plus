@@ -13,22 +13,26 @@
 
 namespace cplus {
 
-template< typename output_iterator >
-class phase3 {
-	output_iterator cont;
+template< typename output_iterator, bool phase1_integration = true >
+class phase3 : public stage< output_iterator, phase3_config >,
+	token_type_import_base {
+	
+	phase3_config const &config;
 	
 	enum states {
-		CPLUS_PP_TOKEN_TYPES, escape, exponent, ud_suffix, rstring, line_comment, block_comment
-	} state, state_after_space;
+		escape = token_type_last, after_newline, exponent, ud_suffix, rstring, line_comment, block_comment
+	};
+	int state, state_after_space;
+	bool in_directive; // only serves to diagnose whitespace restriction of §16/4
 	
-	pp_token token;
+	cplus::token token;
 	
 	pp_char input_buffer[ 8 ], *input_buffer_p; // worst case is %:%\UFFFFFFFF
-	std::string const *punct_lower, *punct_upper, *punct_match;
+	string const *punct_lower, *punct_upper, *punct_match;
 	
 	std::size_t rstring_term_start, rstring_seq_len; // offset, length of rstring termination sequence
 	
-	util::wstring_convert utf8;
+	util::utf8_convert utf8;
 	void shift( pp_char const &in ) { // defer a UTF-8 character or punctuator
 		* input_buffer_p ++ = in;
 	}
@@ -43,94 +47,117 @@ class phase3 {
 	void pass() {
 		/*	Newline characters also override state_after_space, but to see a
 			newline, state must equal ws. So it's handled in "case ws:". */
-		if ( token.type != pp_token_type::ws ) state_after_space = ws;
-		* cont ++ = std::move( token ); // not sure if move helps
+		auto source = token.source;
+		if ( token.type != ws ) state_after_space = ws;
+		
+		* this->cont ++ = std::move( token );
 		token.s.clear();
-		token.type = pp_token_type( state = state_after_space );
+		token.type = state = state_after_space;
+		token.source = std::move( source );
 	}
 	
 public:
-	template< typename ... args >
-	phase3( args && ... a )
-		: cont( std::forward< args >( a ) ... ),
-		state( ws ), state_after_space( ws ),
-		token( pp_token{ pp_token_type::ws, "\n", 0  } ),
+	template< typename in_config_type, typename ... args >
+	phase3( in_config_type &&c, instantiation::pointer in_source, args && ... a )
+		: phase3::stage( std::forward< args >( a ) ... ), config( c ),
+		state( after_newline ), state_after_space( ws ), in_directive( false ),
+		token( cplus::token{ ws, { "\n", config.stream_pool }, in_source, 1 /* kludge for line number */ } ),
 		input_buffer_p( input_buffer ) {}
 	
+	void set_source( instantiation::pointer source )
+		{ token.source = source; }
+	
 	void operator()( pp_char const &in ) {
-		char32_t c;
-		switch ( state ) {
-		default:
-			try {
-				std::u32string s = utf8.from_bytes( in.c );
-				if ( s.empty() ) return shift( in );
-				else if ( state != string && state != char_lit && state != escape ) {
-					if ( in.s == pp_char_source::ucn && char_in_set( char_set::basic_source, s[0] ) ) {
-						throw error( in.p, "Please do not encode basic source text "
+		char32_t &c = utf8.result;
+		if ( state == block_comment || state == line_comment ) {
+			c = in.c;
+		} else {
+			try { // may be better to throw a separate misc token for these?
+				if ( ! utf8.in( in.c ) ) return shift( in );
+				else if ( c >= 0xD800 && c <= 0xDFFF ) throw error( token, // message assumes UTF-16 hasn't been
+					"This is a surrogate pair code point (§2.3/2). If specifying UTF-16, " // encoded in UTF-8
+					"encode the desired Unicode character and the pair will be generated. "
+					"Otherwise, try a hexadecimal escape sequence \"\\xDnnn\"." );
+				else if ( state != rstring && state != string_lit && state != char_lit && state != escape ) {
+					if ( in.s == pp_char_source::ucn && char_in_set( char_set::basic_source, c ) ) {
+						throw error( token, "Please do not encode basic source text "
 											"in universal-character-names (§2.3/2)." );
-					} else if ( ( s[0] <= 0x1F && ! char_in_set( char_set::space, s[0] ) )
-							|| ( s[0] >= 0x7F && s[0] <= 0x9F ) ) {
-						throw error( in.p, "Stray control character (§2.3/2)." );
+					} else if ( ( c <= 0x1F && ! char_in_set( char_set::space, c ) )
+							|| ( c >= 0x7F && c <= 0x9F ) ) {
+						throw error( token, "Stray control character (§2.3/2)." );
 					}
 				}
-				c = s[0];
 			} catch ( std::range_error & ) {
-				throw error( in.p, "Malformed UTF-8." );
+				throw error( token, "Malformed UTF-8." );
 			}
-			break;
-		case rstring: case block_comment: case line_comment:
-			c = in.c;
 		}
 		
 		for (;;) switch ( state ) {
-		case ws:
-			if ( c == '\n' ) {
-				if ( token == pp_constants::space ) token.s.clear();
-				token.s += '\n';
-				return;
-			} else if ( char_in_set( char_set::space, c ) ) {
-				if ( token.s.empty() ) {
-					token = pp_constants::space;
-					token.p = in.p;
+		case ws: // every other state returns here after pass(), even if a space character hasn't been seen
+			if ( c == '\n' || c == '\r' ) { // quietly allow CR on the assumption it precedes LF.
+				if ( config.preserve_space && ! token.s.empty() ) {
+					//std::cerr << "pass space " << token.s << "•\n";
+					pass();
 				}
+				token.location = in.p;
+				token.s = pp_constants::newline.s;
+				if ( config.preserve_space ) token = token.reallocate( config.stream_pool ); // re-open to append
+				in_directive = false;
+				state = after_newline;
+				state_after_space = ws; // cancel looking for directive or header name
+				return;
+			} else
+		case after_newline: // fallthrough - only insert one token break before first newline
+			if ( char_in_set( char_set::space, c ) ) {
+				if ( token.s.empty() ) {
+					token.location = in.p;
+				}
+				if ( config.preserve_space && token.s.a == & config.stream_pool ) {
+					assert ( token.s.a == & config.stream_pool );
+					unshift( in );
+				} else if ( token.s.empty() ) {
+					token.s = pp_constants::space.s;
+				}
+				if ( in_directive && c == '\v' ) throw error( token,
+					"Only space and horizontal tab allowed in whitespace outside comments in a directive (§16/4)." );
 				return;
 			
 			} else {
-				bool at_newline = false;
 				if ( ! token.s.empty() ) {
-					at_newline = token.s[0] == '\n';
-					if ( at_newline ) state_after_space = ws;
+					if ( state == after_newline ) state_after_space = after_newline;
+					token.type = ws;
 					pass(); // empty whitespace tokens are filtered and do not use state_after_space
 				}
 				
-				token.p = in.p;
-				if ( state != ws ) {
-					continue;
+				token.location = in.p;
+				if ( state != ws && state != after_newline ) {
+					continue; // go to state_after_space
 				}
 				unshift( in );
 				
 				if ( char_in_set( char_set::punct, c ) ) {
 					if ( char_in_set( char_set::multipunct, c ) ) {
-						// tentatively set type to directive if it could possibly be one
-						token.type = at_newline? pp_token_type::directive : pp_token_type::punct;
+						// tentatively set type to directive if it could possibly be the opening #
+						token.type = state == after_newline? directive : punct;
 						state = punct;
 						punct_lower = multichar_punctuators;
 						punct_upper = multichar_punctuators_end;
 						punct_match = nullptr;
-					} else {
-						token.type = pp_token_type::punct;
+						
+					} else { // question mark, comma, semicolon, tilde, parens, braces, brackets
+						token.type = punct;
 						pass();
 					}
 				} else if ( char_in_set( char_set::digit, c ) ) {
-					token.type = pp_token_type( state = num );
+					token.type = state = num;
 				} else if ( char_in_set( char_set::initial, c ) ) {
-					token.type = pp_token_type( state = id );
+					token.type = state = id;
 				} else if ( c == '\"' ) {
-					token.type = pp_token_type( state = string );
+					token.type = state = string_lit;
 				} else if ( c == '\'' ) {
-					token.type = pp_token_type( state = char_lit );
+					token.type = state = char_lit;
 				} else { // "other", such as a stray backslash
-					token.type = pp_token_type::misc;
+					token.type = misc;
 					pass(); // chars not in alpha may still be catenated to an id or header-name
 				}
 				return;
@@ -142,47 +169,68 @@ public:
 				unshift( in );
 				return;
 			} else {
-				std::string const *id_punct
+				string const *id_punct
 					= std::lower_bound( id_punctuators, std::end( id_punctuators ), token.s );
 				if ( id_punct != std::end( id_punctuators ) && token.s == * id_punct ) { // §2.13/1
 					if ( id_punct == include_directive ) {
 						if ( state == directive ) {
 							pass();
-							token.type = pp_token_type( state = state_after_space = header_name );
+							token.type = state = state_after_space = header_name;
+							token.location = in.p;
 							continue;
 						} else goto got_id;
 					} else {
-						token.type = pp_token_type::punct;
+						token.type = punct;
 						pass();
 						continue;
 					}
 				} else if ( c == '"'
-					&& std::binary_search( string_prefixes, std::end( string_prefixes ), token.s ) ) {
+						&& std::binary_search( string_lit_prefixes, std::end( string_lit_prefixes ), token.s ) ) {
 					if ( token.s.back() == 'R' ) {
 						unshift( in );
 						state = rstring;
-						token.type = pp_token_type::string;
+						token.type = string_lit;
 						rstring_term_start = std::string::npos;
-						throw raw_string_notification{ true };
-					} else {
+						if ( phase1_integration ) throw raw_string_notification{ true };
+						return;
+					} else if ( token.type != string_lit ) { // 
 						unshift( in );
-						token.type = pp_token_type( state = string );
+						token.type = state = string_lit;
 						return;
 					}
-				} else if ( c == '\'' && ( token.s == "U" || token.s == "L" || token.s == "u" ) ) {
-					token.type = pp_token_type( state = char_lit );
+				} else if ( c == '\''
+						&& std::binary_search( char_lit_prefixes, std::end( char_lit_prefixes ), token.s ) ) {
+					token.type = state = char_lit;
 					unshift( in );
 					return;
 				
-				} else got_id: {
-					pass();
+				} else {
+					if ( ( token.type == string_lit && token.s.back() != '"' )
+						|| ( token.type == char_lit && token.s.back() != '\'' ) ) { // an alternative token cannot be a ud-suffix
+						std::string suffix( token.s );
+						suffix.erase( 0, suffix.rfind( token.type == string_lit? '"' : '\'' ) + 1 );
+						string suffix_s( suffix.c_str(), config.stream_pool ); // preempts token for writability
+						string const *id_punct = std::lower_bound( id_punctuators, std::end( id_punctuators ), suffix_s );
+						if ( id_punct != std::end( id_punctuators ) && suffix_s == * id_punct
+								&& id_punct != include_directive ) {
+							token.s.assign( token.s.begin(), token.s.end() - suffix_s.size() ); // preempts suffix_s
+							pass();
+							
+							token.s = std::move( suffix_s ); // suffix_s is passed not as writer
+							token.type = punct;
+							pass();
+						}
+					}
+				got_id:
+					if ( token.s.empty() ) token.type = state = ws; // state_after_space may still be directive
+					else pass();
 					continue;
 				}
 			}
 		
 		case num:
 			if ( char_in_set( char_set::identifier, c ) || c == '.' ) {
-				unshift( in ); // Standard unclear about combining diacritics with numerals.
+				unshift( in ); // Standard unclear about non-initial chars (combining diacritics) with numerals.
 				if ( c == 'E' || c == 'e' ) state = exponent;
 				return;
 			} else {
@@ -210,9 +258,22 @@ public:
 				-- token.s.back();
 				
 				if ( punct_lower == punct_upper ) { // no possible match
-					//token.s.pop_back(); // backtrack
-					token.s.erase( token.s.size() - 1 ); // G++ doesn't have pop_back yet
+					token.s.pop_back(); // backtrack
+					//token.s.erase( token.s.size() - 1 ); // G++ doesn't have pop_back yet
 					goto punct_done;
+				
+				} else if ( punct_lower == cplus::block_comment ) {
+					state = block_comment;
+					if ( ! config.preserve_space ) token.s = pp_constants::space.s;
+					input_buffer_p = input_buffer;
+					return;
+				
+				} else if ( punct_lower == cplus::line_comment ) {
+					state = line_comment;
+					// token will be discarded if not preserving space
+					input_buffer_p = input_buffer;
+					return;
+				
 				} else {
 					if ( punct_lower->size() == token.s.size() ) {
 						punct_match = punct_lower;
@@ -220,8 +281,8 @@ public:
 					shift( in );
 					return;
 				}
-			} else if ( token.s == "." && char_in_set( char_set::digit, c ) ) {
-				token.type = pp_token_type( state = num );
+			} else if ( token == pp_constants::dot && char_in_set( char_set::digit, c ) ) {
+				token.type = state = num;
 				unshift( in );
 				return;
 			
@@ -229,38 +290,24 @@ public:
 				int match_size;
 				if ( ! punct_match ) {
 					match_size = 1;
-				
-				} else if ( punct_match == cplus::block_comment ) {
-					state = block_comment;
-					token.s.clear();
-					input_buffer_p = input_buffer;
-					continue;
-				
-				} else if ( punct_match == cplus::line_comment ) {
-					state = line_comment;
-					token.s.clear();
-					input_buffer_p = input_buffer;
-					continue;
-				
-				} else { // Common case! punct_match != nullptr and not a comment:
+				} else if ( punct_match == less_scope ) {
+					// edge case of §2.5/3: group "<: ::" and "<: :>" specially or "< ::" by default.
+					match_size = c == ':' || c == '>'? 2 : 1;
+				} else {
 					match_size = punct_match->size();
-					
-					if ( punct_match == less_scope ) { // edge case of §2.5/3:
-						// group "<: ::" and "<: :>" specially or "< ::" by default.
-						match_size = c == ':' || c == '>'? 2 : 1;
-					}
 				}
-				token.s.erase( match_size ); // make token a copy of punct_match
+				token.s.resize( match_size ); // make token a copy of punct_match
 				
-				if ( token.type == pp_token_type::directive ) {
-					if ( punct_match == alt_hash || token.s == "#" ) {
+				if ( token.type == directive ) {
+					if ( punct_match == hash_alt || token.s == pp_constants::hash.s ) {
 						pass();
 						state_after_space = directive;
+						in_directive = true;
 						if ( char_in_set( char_set::initial, c ) ) {
-							token.type = pp_token_type( state = directive ); // kludge
+							token.type = state = directive; // kludge
 						}
 						goto punct_passed;
-					} else token.type = pp_token_type::punct;
+					} else token.type = punct;
 				}
 				pass();
 			punct_passed:
@@ -273,24 +320,29 @@ public:
 			}
 		
 		case block_comment:
-			if ( token.s.empty() ) {
-				if ( c == '*' ) token.s += c;
+			if ( config.preserve_space ) token.s += c; // no UTF-8 decoding in comments
+			
+			if ( input_buffer_p == input_buffer ) {
+				if ( c == '*' && in.s != pp_char_source::ucn ) shift( in );
 				return;
-			} else if ( c == '/' ) {
-				token.type = pp_token_type( state = ws );
-				token.s = ' ';
+			} else if ( c == '/' && in.s != pp_char_source::ucn ) {
+				/*	If we got here from /​* being a pseudo punctuator, looking for #, then
+					this is still the beginning of the line, and continue looking for a #. */
+				state = token.type == directive? (int) after_newline : ws;
+				token.type = ws;
+				input_buffer_p = input_buffer;
 				return;
 			} else {
-				token.s.clear();
+				input_buffer_p = input_buffer;
 				return;
 			}
 		
 		case line_comment:
-			if ( c == '\n' ) {
-				token.type = pp_token_type( state = ws );
-				token.s = '\n';
-				return;
+			if ( c == '\n' && in.s != pp_char_source::ucn ) {
+				token.type = state = ws;
+				continue;
 			} else {
+				if ( config.preserve_space ) token.s += c;
 				return;
 			}
 		
@@ -303,11 +355,11 @@ public:
 				}
 				if ( char_in_set( char_set::space, c ) || c == ')' || c == '\\'
 						|| ! char_in_set( char_set::basic_source, c ) )
-					throw error( in.p, "Raw string termination sequence must consist of "
+					throw error( token, "Raw string termination sequence must consist of "
 						"alphanumeric characters and C-language punctuation except parens "
 						"and backslash (§2.14.5)." );
 				if ( token.s.size() - token.s.find( '"' ) == 18 )
-					throw error( in.p, "Raw string termination sequence may contain at "
+					throw error( token, "Raw string termination sequence may contain at "
 						"most 16 characters (§2.14.5/2)." );
 				return;
 			} else if ( c == ')' ) {
@@ -316,10 +368,11 @@ public:
 				return;
 			} else if ( rstring_term_start != 0 ) {
 				// match the char to the corresponding sequence at beginning of the token
-				uint8_t begin_seq_char = token.s[ token.s.find( '"' ) + 1 + rstring_seq_len ];
+				std::uint8_t begin_seq_char = token.s[ token.s.find( '"' ) + 1 + rstring_seq_len ];
 				if ( c == '"' && begin_seq_char == '(' ) {
 					state = ud_suffix;
-					throw raw_string_notification{ false };
+					if ( phase1_integration ) throw raw_string_notification{ false };
+					return;
 					
 				} else if ( begin_seq_char != c ) {
 					rstring_term_start = 0; // mismatch, start over at next ")"
@@ -331,28 +384,24 @@ public:
 			}
 			return;
 		
-		case string:
+		case string_lit:
 		case char_lit:
-			/*if ( c > 0x10FFFF && ( token.s[0] == 'U' || token.s[0] == 'u' ) ) {
-				throw error( in.p, "Universal-character-names within a char16_t or char32_t literal must "
-					"be ≤ 0x10FFFF, i.e. in Unicode range (§2.14.5/15). Try a hex escape sequence instead."
-			} -- this should be done later */
 			if ( in.s == pp_char_source::ucn && char_in_set( char_set::basic_source, c ) ) {
 				goto unmap_ucn; // Basic source UCNs are special, and must be processed like escapes.
 			}
 			unshift( in );
 			switch ( c ) {
-			case '\"':	if ( state == string ) state = ud_suffix; return;
+			case '\"':	if ( state == string_lit ) state = ud_suffix; return;
 			case '\'':	if ( state == char_lit ) state = ud_suffix; return;
-			case '\\':	state = escape; throw inhibit_ucn_notification();
-			case '\n':	throw error( in.p, "Use \\n instead of embedding a newline in a literal." );
+			case '\\':	state = escape; if ( phase1_integration ) throw inhibit_ucn_notification(); return;
+			case '\n':	throw error( token, "Use \\n instead of embedding a newline in a literal (§2.14.5)." );
 			default:	return;
 			}
 		
 		// Don't map escape sequences yet, as that depends on execution charset.
 		case escape:
 			// But do *unmap* UCNs, since eg "\$" = "\\u0024" greedily matches the backslash escape first.
-			if ( in.s == pp_char_source::ucn ) throw error( in.p, "ICE: failed to inhibit UCN conversion." );
+			if ( in.s == pp_char_source::ucn ) throw error( token, "ICE: failed to inhibit UCN conversion." );
 			if ( ! char_in_set( char_set::basic_source, c ) ) {
 			unmap_ucn:
 				int digits = c >= 0x10000? 8 : 4;
@@ -363,7 +412,8 @@ public:
 				s.setf( std::ios::hex, std::ios::basefield );
 				s.setf( std::ios::uppercase );
 				s << static_cast< uint32_t >( c );
-				token.s += s.str();
+				//token.s += s.str();
+				token.s += s.str().c_str();
 				input_buffer_p = input_buffer;
 			} else unshift( in );
 			state = static_cast< states >( token.type );
@@ -375,7 +425,7 @@ public:
 				continue;
 			} else {
 				if ( ! token.s.empty() ) pass();
-				token.type = pp_token_type( state = ws );
+				token.type = state = ws;
 				continue;
 			}
 		
@@ -390,18 +440,21 @@ public:
 					if ( input_buffer_p == input_buffer ) shift( in );
 					return; // remember whether there was trailing space, not how much
 				} else {
+					if ( input_buffer_p != input_buffer ) {
+						token.s += input_buffer->c; // unshift possible space
+						input_buffer_p = input_buffer;
+					}
 					goto header_name_retokenize; // ... or reject it and redo.
 				}
 			} else if ( c == '\n' ) header_name_retokenize: {
-				unshift( in );
 				/*	Re-match against §16.2/4. If characters were specified as trigraphs or UCNs,
-					file positioning will be approximate. */
-				std::streamoff p = token.p;
-				std::string redo;
-				swap( token.s, redo );
-				token.type = pp_token_type( state = ws );
-				for ( uint8_t c : std::move( redo ) ) (*this)( pp_char{ c, p ++ } );
-				return;
+					file positioning will be approximate (and this assumes file positioning). */
+				auto p = token.location - file_location::column_increment;
+				string redo( token.s );
+				token.s.clear();
+				token.type = state = ws;
+				for ( std::uint8_t c : std::move( redo ) ) (*this)( pp_char{ c, p += file_location::column_increment } );
+				return (*this)( in );
 			} else {
 				unshift( in );
 				return;
@@ -411,17 +464,18 @@ public:
 		}
 	}
 	
-	friend void finalize( phase3 &o ) {
-		if ( o.state == block_comment || o.state == line_comment )
-			throw error( o.token.p, "Unterminated comment." );
-		if ( o.state == string || o.state == char_lit || o.state == rstring )
-			throw error( o.token.p, "Unterminated literal." );
-		if ( o.state == header_name ) // possible by ending file with a backslash
-			throw error( o.token.p, "Unterminated header name." );
-		if ( o.state != ws ) throw error( o.token.p, "ICE: Phase 3 terminated in unexpected state." );
+	void flush() {
+		if ( state != ws && state != after_newline ) (*this)( { ' ' } );
 		
-		if ( ! o.token.s.empty() ) o.pass();
-		finalize( o.cont );
+		if ( state == block_comment || state == line_comment )
+			throw error( token, "Unterminated comment." );
+		if ( state == string_lit || state == char_lit || state == rstring )
+			throw error( token, "Unterminated literal." );
+		if ( state == header_name ) // possible by ending file with a backslash
+			throw error( token, "Unterminated header name." );
+		if ( state != ws && state != after_newline ) throw error( token, "ICE: Phase 3 terminated in unexpected state." );
+		
+		if ( ! token.s.empty() ) pass();
 	}
 };
 
