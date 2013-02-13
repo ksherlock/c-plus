@@ -14,7 +14,9 @@ constexpr bool char_in_set( std::uint8_t const (&map)[ n ], char32_t c );
 
 namespace char_set {
 
-constexpr std::uint8_t basic_source[] = {
+typedef std::uint8_t char_bitmap[ 0x80 / 8 ];
+
+constexpr char_bitmap basic_source = {
 	0x00, 0x74, 0x00, 0x00,	// control chars, four are whitespace
 	0xF7, 0xFF, 0xFF, 0xFF,	// punctuation except $; numbers
 	0x7F, 0xFF, 0xFF, 0xFF,	// skip @; uppercase letters
@@ -22,29 +24,38 @@ constexpr std::uint8_t basic_source[] = {
 };
 
 // Reimplement some things from cctype, but improve uniformity at little effort.
-constexpr std::uint8_t space[] = {
+constexpr char_bitmap space = {
 	0x00, 0x74, 0x00, 0x00,
 	0x80, 0x00, 0x00, 0x00,
 };
 
-constexpr std::uint8_t digit[] = {
+constexpr char_bitmap digit = {
 	0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0xFF, 0xC0,
 };
 
-constexpr std::uint8_t punct[] = {
+constexpr char_bitmap punct = {
 	0x00, 0x00, 0x00, 0x00,
 	0x56, 0xFF, 0x00, 0x3F, // Do not include single or double quotes
 	0x00, 0x00, 0x00, 0x16,
 	0x00, 0x00, 0x00, 0x1E,
 };
 
-constexpr std::uint8_t multipunct[] = { // characters appearing in multichar punctuators
+constexpr char_bitmap multipunct = { // characters appearing in multichar punctuators
 	0x00, 0x00, 0x00, 0x00,
 	0x56, 0x37, 0x00, 0x2E, // !#%& *+-./ :<=>
 	0x00, 0x00, 0x00, 0x02, // ^
 	0x00, 0x00, 0x00, 0x08, // |
 };
+
+constexpr char_bitmap ascii_alnum = {
+	0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0xFF, 0xC0,
+	0x7F, 0xFF, 0xFF, 0xE1,
+	0x7F, 0xFF, 0xFF, 0xE0,
+};
+
+constexpr char_bitmap none = {};
 
 struct range {
 	char16_t top, bottom;
@@ -180,6 +191,8 @@ token const newline{ token_type::ws, "\n" }, // don't test for equality to this;
 	variadic_decl{ token_type::punct, "..." },
 	lparen{ token_type::punct, "(" },
 	rparen{ token_type::punct, ")" },
+	colon{ token_type::punct, ":" },
+	conditional{ token_type::punct, "?" },
 	concat{ token_type::punct, "##" },
 	concat_alt{ token_type::punct, "%:%:" },
 	stringize{ token_type::punct, "#" },
@@ -206,6 +219,7 @@ token const newline{ token_type::ws, "\n" }, // don't test for equality to this;
 	true_value{ token_type::id, "true" },
 	zero{ token_type::num, "0" },
 	one{ token_type::num, "1" },
+	bang{ token_type::punct, "!" },
 	empty_string{ token_type::string_lit, "\"\"" };
 
 inline bool is_stringize( token const &in )

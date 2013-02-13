@@ -8,7 +8,6 @@
 
 #include <map>
 #include <unordered_map>
-#include <scoped_allocator>
 
 namespace cplus {
 
@@ -43,8 +42,8 @@ public:
 		: macro_context::stage( std::forward< input >( a ) ... ), common( common_info ),
 		definition( nullptr ), paren_depth( 0 ) {}
 	
-	void flush() { call_stack callers; return flush( callers ); }
-	void flush( call_stack &callers ) {
+	// flush and operator() accept list of callers as rvalue, return it unchanged
+	void flush( call_stack &&callers = call_stack() ) {
 		replace_object_completely( callers );
 		if ( paren_depth != 0 ) {
 			throw error( input[ input.front().type == token_type::ws ], "Unterminated macro invokation." );
@@ -71,10 +70,9 @@ public:
 			if ( definition ) {
 				if ( in == pp_constants::recursion_stop ) {
 					definition = nullptr; // Abort macro call. Recursion_stop token will be passed through.
-				
-				} else if ( ! is_function_like( * definition ) ) { // Call the object-like macro.
-					replace_object_completely( callers ); // May set definition to a function-like macro.
 				}
+				replace_object_completely( callers ); // Call any object-like macro. May set definition to a function-like macro.
+				
 				if ( definition && is_function_like( * definition ) && in == pp_constants::lparen ) { // function call
 					goto got_lparen; // Keep open paren, just for consistency.
 				}
@@ -92,7 +90,7 @@ public:
 					definition = &* def;
 					input.push_back( std::move( in ) ); // Remember name in case macro isn't called.
 				} else {
-					flush( callers ); // Clear any uncalled function, or just flush whitespace. No object macro here.
+					flush( std::move( callers ) ); // Clear any uncalled function, or just flush whitespace. No object macro here.
 					* this->cont ++ = std::move( in ); // Common case: not in any part of an invokation, pass through.
 				}
 			}
@@ -112,7 +110,9 @@ public:
 			if ( in.type != token_type::ws || input.empty() || input.back().type != token_type::ws ) {
 				input.push_back( std::move( in ) );
 			} else if ( common.token_config.preserve_space ) {
+				#if ! CPLUS_USE_STD_STRING
 				input.back().s.open();
+				#endif
 				input.back().s += in.s.c_str();
 			}
 		}
@@ -137,7 +137,7 @@ protected:
 		
 		if ( kind == presumption::line ) {
 			std::int32_t logical_line = std::int32_t( t->location & file_location::line_mask ) + common.presumed.line_displacement;
-			return { token_type::num, { std::to_string( logical_line ).c_str(), common.token_config.stream_pool } };
+			return { token_type::num, string{ std::to_string( logical_line ).c_str(), common.token_config.stream_pool } };
 		} else {
 			if ( common.presumed.filename == token() ) {
 				return { token_type::string_lit, static_cast< inclusion const & >( * t->source ).file_name,
@@ -270,7 +270,7 @@ private:
 				arg.trim_end();
 				
 				try {
-					phase3< decltype( acc_it ), false > lexer( common.token_config,
+					phase3< decltype( acc_it ), std::false_type > lexer( common.token_config,
 						std::make_shared< macro_substitution >( instantiate( inst, pen ++ ), arg.begin ), acc_it );
 					
 					acc_limiter.reset( 1 );
@@ -350,7 +350,7 @@ private:
 				}
 				
 				try {
-					phase3< decltype( acc_it ), false > lexer( common.token_config, ends[0][ -1 ].source, acc_it );
+					phase3< decltype( acc_it ), std::false_type > lexer( common.token_config, ends[0][ -1 ].source, acc_it );
 					auto pos = ends[lhs][ -1 ].location; // use LHS for position of pasted token
 					
 					acc_limiter.reset( 1 );
@@ -386,8 +386,7 @@ private:
 					auto caller_self = callers.back();
 					callers.pop_back(); // evaluate argument in caller's context, i.e. current name is not recursion-stopped
 					
-					macro_context< util::output_iterator_from_functor< std::function< void( token && ) > > >
-						nested( common, [&]( token &&in ) {
+					macro_context< std::function< void( token && ) > > nested( common, [&]( token &&in ) {
 							callers.push_back( caller_self ); // restore current context for rescanning
 							* local ++ = std::move( in ); // local references callers
 							callers.pop_back();
@@ -399,7 +398,7 @@ private:
 						nested( token{ arg_pen->type, arg_pen->s,
 								subst, std::size_t( arg_pen - arg.begin ) }, std::move( callers ) );
 					}
-					nested.flush( callers );
+					nested.flush( std::move( callers ) );
 					
 					callers.push_back( caller_self );
 				}
@@ -411,7 +410,7 @@ private:
 };
 
 macro_context_info::name_map::value_type normalize_macro_definition( tokens &&input, string_pool &macro_pool ) {
-	using pp_constants::skip_space;
+	using namespace pp_constants;
 	
 	tokens::iterator pen = input.begin() + 1; // skip leading space in input buffer
 	skip_space( pen, input.end() ); // skip directive "define"
@@ -420,22 +419,22 @@ macro_context_info::name_map::value_type normalize_macro_definition( tokens &&in
 		if ( pen == input.end() ) -- pen;
 		throw error( * pen, "Expected macro definition." );
 	}
-	string name = { pen ++ ->s, macro_pool };
+	string name = repool( pen ++ ->s, macro_pool );
 	
 	tokens replacement;
 	size_t nargs = 0;
 	if ( pen != input.end() && pen->type != token_type::ws ) {
-		if ( * pen != pp_constants::lparen )
+		if ( * pen != lparen )
 			throw error( * pen, "An object-like macro definition must begin with whitespace (§16.3/3)." );
-		while ( * pen != pp_constants::rparen ) {
+		while ( * pen != rparen ) {
 			if ( skip_space( ++ pen, input.end() ) == input.end() ) parameters_unterminated:
 				throw error( pen[ -1 ], "Unterminated parameter list." );
-			if ( replacement.empty() && * pen == pp_constants::rparen ) break; // empty list
+			if ( replacement.empty() && * pen == rparen ) break; // empty list
 			
-			if ( * pen == pp_constants::variadic )
+			if ( * pen == variadic )
 				throw error( * pen, "The identifier __VA_ARGS__ is reserved (§16.3/5)." );
-			if ( * pen == pp_constants::variadic_decl ) { // convert punctuator "..." to identifier "__VA_ARGS__"
-				replacement.push_back( { token_type::id, pp_constants::variadic.s, pen->source, pen->location } );
+			if ( * pen == variadic_decl ) { // convert punctuator "..." to identifier "__VA_ARGS__"
+				replacement.push_back( { token_type::id, variadic.s, pen->source, pen->location } );
 			} else {
 				if ( pen->type != token_type::id )
 					throw error( * pen, "Parameter name must be an identifier." );
@@ -445,31 +444,31 @@ macro_context_info::name_map::value_type normalize_macro_definition( tokens &&in
 				replacement.push_back( pen->reallocate( macro_pool ) );
 			}
 			if ( skip_space( ++ pen, input.end() ) == input.end() ) goto parameters_unterminated;
-			if ( * pen != pp_constants::rparen && replacement.back() == pp_constants::variadic )
+			if ( * pen != rparen && replacement.back() == variadic )
 				throw error( replacement.back(),
 					"Variadic arguments must be declared as \"...\" at the end of the parameter "
 					"list, and then referred to as \"__VA_ARGS__\" (§16.3/12, §16.3.1/2)." );
-			if ( * pen != pp_constants::rparen && * pen != pp_constants::comma )
+			if ( * pen != rparen && * pen != comma )
 				throw error( * pen, "Expected \",\" to separate parameter declarations." );
 		}
 		replacement.push_back( std::move( pen ++ ->reallocate( macro_pool ) ) ); // save ")"
 		nargs = replacement.size(); // includes ")" so nonzero if function-like
 		
-	} else replacement.push_back( pp_constants::space ); // synthesize a space if list is truly empty
+	} else replacement.push_back( space ); // synthesize a space if list is truly empty
 	
-	if ( skip_space( pen, input.end() ) != input.end() && pp_constants::is_concat( * pen ) ) bad_cat:
+	if ( skip_space( pen, input.end() ) != input.end() && is_concat( * pen ) ) bad_cat:
 		throw error( * pen, "Concatenation (##) operator may not appear at beginning or end of a macro (§16.3.3/1)." );
-		
+	
 	bool got_stringize = false;
 	while ( skip_space( pen, input.end() ) != input.end() ) {
 		if ( got_stringize && nargs // validate stringize operator
 			&& std::find( replacement.begin(), replacement.begin() + nargs - 1, * pen )
 				== replacement.begin() + nargs - 1 ) throw error( * pen,
 				"Stringize (#) operator in a function-like macro may only apply to an argument (§16.3.2/1)." );
-		got_stringize = pp_constants::is_stringize( * pen );
+		got_stringize = is_stringize( * pen );
 		
-		if ( * pen == pp_constants::variadic // validate variadic usage
-			&& ( nargs < 2 || replacement[ nargs - 2 ] != pp_constants::variadic ) )
+		if ( * pen == variadic // validate variadic usage
+			&& ( nargs < 2 || replacement[ nargs - 2 ] != variadic ) )
 			throw error( * pen, "The identifier __VA_ARGS__ is reserved (§16.3/5)." );
 		
 		replacement.push_back( pen ++ ->reallocate( macro_pool ) );
@@ -479,7 +478,7 @@ macro_context_info::name_map::value_type normalize_macro_definition( tokens &&in
 	}
 	if ( replacement.size() > 1 && replacement.back().type == token_type::ws ) replacement.pop_back();
 	
-	if ( pp_constants::is_concat( replacement.back() ) )
+	if ( is_concat( replacement.back() ) )
 		goto bad_cat;
 	
 	return { name, replacement };

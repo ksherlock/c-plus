@@ -13,14 +13,53 @@
 
 namespace cplus {
 
-template< typename output_iterator, bool phase1_integration = true >
+int fast_dispatch = 0, slow_dispatch = 0, slow_histo[ 20 ];
+
+namespace char_set {
+	constexpr char_bitmap ascii_alnum_not_exponent = {
+		0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0xFF, 0xC0,
+		0x7B, 0xFF, 0xFF, 0xE1,
+		0x7B, 0xFF, 0xFF, 0xE0,
+	};
+	constexpr char_bitmap line_space = {
+		0x00, 0x40, 0x00, 0x00,
+		0x80, 0x00, 0x00, 0x00,
+	};
+	constexpr char_bitmap space_not_vt = {
+		0x00, 0x64, 0x00, 0x00,
+		0x80, 0x00, 0x00, 0x00,
+	};
+	constexpr char_bitmap anything_not_newline = {
+		0xFF, 0xDF, 0xFF, 0xFF,
+		0xFF, 0xFF, 0xFF, 0xFF,
+		0xFF, 0xFF, 0xFF, 0xFF,
+		0xFF, 0xFF, 0xFF, 0xFF,
+	};
+	constexpr char_bitmap not_block_termination = {
+		0xFF, 0xFF, 0xFF, 0xFF,
+		0xFF, 0xDE, 0xFF, 0xFF,
+		0xFF, 0xFF, 0xFF, 0xFF,
+		0xFF, 0xFF, 0xFF, 0xFF,
+	};
+	
+	constexpr char_bitmap const *safe_chars[] = {
+		&none /* ws */, &ascii_alnum /* id */, &ascii_alnum_not_exponent /* num */, &none /* todo, multipunct for punct */,
+		&none, &none, &ascii_alnum, &none, &none, /* string_lit, char_lit, directive, header_name, misc */
+		&none, &none, &none, &none, /* escape, exponent, ud_suffix, rstring */
+		&line_space /* space_run */, &space_not_vt /* after_newline */,
+		&anything_not_newline /* line_comment */, &not_block_termination /* block_comment */
+	};
+}
+
+template< typename output_iterator, typename phase1_integration = std::true_type >
 class phase3 : public stage< output_iterator, phase3_config >,
 	token_type_import_base {
 	
 	phase3_config const &config;
 	
 	enum states {
-		escape = token_type_last, after_newline, exponent, ud_suffix, rstring, line_comment, block_comment
+		escape = token_type_last, exponent, ud_suffix, rstring, space_run, after_newline, line_comment, block_comment
 	};
 	int state, state_after_space;
 	bool in_directive; // only serves to diagnose whitespace restriction of §16/4
@@ -56,18 +95,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 		token.source = std::move( source );
 	}
 	
-public:
-	template< typename in_config_type, typename ... args >
-	phase3( in_config_type &&c, instantiation::pointer in_source, args && ... a )
-		: phase3::stage( std::forward< args >( a ) ... ), config( c ),
-		state( after_newline ), state_after_space( ws ), in_directive( false ),
-		token( cplus::token{ ws, { "\n", config.stream_pool }, in_source, 1 /* kludge for line number */ } ),
-		input_buffer_p( input_buffer ) {}
-	
-	void set_source( instantiation::pointer source )
-		{ token.source = source; }
-	
-	void operator()( pp_char const &in ) {
+	void general_path( pp_char const &in ) {
 		char32_t &c = utf8.result;
 		if ( state == block_comment || state == line_comment ) {
 			c = in.c;
@@ -94,6 +122,7 @@ public:
 		
 		for (;;) switch ( state ) {
 		case ws: // every other state returns here after pass(), even if a space character hasn't been seen
+		case space_run:
 			if ( c == '\n' || c == '\r' ) { // quietly allow CR on the assumption it precedes LF.
 				if ( config.preserve_space && ! token.s.empty() ) {
 					//std::cerr << "pass space " << token.s << "•\n";
@@ -111,9 +140,10 @@ public:
 			if ( char_in_set( char_set::space, c ) ) {
 				if ( token.s.empty() ) {
 					token.location = in.p;
+					state = space_run;
 				}
-				if ( config.preserve_space && token.s.a == & config.stream_pool ) {
-					assert ( token.s.a == & config.stream_pool );
+				if ( config.preserve_space ) {
+					assert ( token.s.get_allocator() == config.stream_pool );
 					unshift( in );
 				} else if ( token.s.empty() ) {
 					token.s = pp_constants::space.s;
@@ -130,7 +160,7 @@ public:
 				}
 				
 				token.location = in.p;
-				if ( state != ws && state != after_newline ) {
+				if ( state != ws && state != after_newline && state != space_run ) {
 					continue; // go to state_after_space
 				}
 				unshift( in );
@@ -191,7 +221,7 @@ public:
 						state = rstring;
 						token.type = string_lit;
 						rstring_term_start = std::string::npos;
-						if ( phase1_integration ) throw raw_string_notification{ true };
+						if ( phase1_integration::value ) throw raw_string_notification{ true };
 						return;
 					} else if ( token.type != string_lit ) { // 
 						unshift( in );
@@ -328,7 +358,7 @@ public:
 			} else if ( c == '/' && in.s != pp_char_source::ucn ) {
 				/*	If we got here from /​* being a pseudo punctuator, looking for #, then
 					this is still the beginning of the line, and continue looking for a #. */
-				state = token.type == directive? (int) after_newline : ws;
+				state = token.type == directive? (int) after_newline : space_run;
 				token.type = ws;
 				input_buffer_p = input_buffer;
 				return;
@@ -371,7 +401,7 @@ public:
 				std::uint8_t begin_seq_char = token.s[ token.s.find( '"' ) + 1 + rstring_seq_len ];
 				if ( c == '"' && begin_seq_char == '(' ) {
 					state = ud_suffix;
-					if ( phase1_integration ) throw raw_string_notification{ false };
+					if ( phase1_integration::value ) throw raw_string_notification{ false };
 					return;
 					
 				} else if ( begin_seq_char != c ) {
@@ -393,7 +423,7 @@ public:
 			switch ( c ) {
 			case '\"':	if ( state == string_lit ) state = ud_suffix; return;
 			case '\'':	if ( state == char_lit ) state = ud_suffix; return;
-			case '\\':	state = escape; if ( phase1_integration ) throw inhibit_ucn_notification(); return;
+			case '\\':	state = escape; if ( phase1_integration::value ) throw inhibit_ucn_notification(); return;
 			case '\n':	throw error( token, "Use \\n instead of embedding a newline in a literal (§2.14.5)." );
 			default:	return;
 			}
@@ -459,13 +489,33 @@ public:
 				unshift( in );
 				return;
 			}
-		
-		default: ;
+		}
+	}
+	
+public:
+	template< typename in_config_type, typename ... args >
+	phase3( in_config_type &&c, instantiation::pointer in_source, args && ... a )
+		: phase3::stage( std::forward< args >( a ) ... ), config( c ),
+		state( after_newline ), state_after_space( ws ), in_directive( false ),
+		token( cplus::token{ ws, string{ "\n", config.stream_pool }, in_source, 1 /* kludge for line number */ } ),
+		input_buffer_p( input_buffer ) {}
+	
+	void operator()( pp_char const &in ) {
+		if ( char_in_set( * char_set::safe_chars[ state ], in.c ) ) {
+			//++ fast_dispatch;
+			input_buffer_p = input_buffer;
+			if ( state < space_run || config.preserve_space ) {
+				unshift( in );
+			}
+		} else {
+			//++ slow_dispatch;
+			//++ slow_histo[ state ];
+			general_path( in );
 		}
 	}
 	
 	void flush() {
-		if ( state != ws && state != after_newline ) (*this)( { ' ' } );
+		if ( state != ws && state != after_newline && state != space_run ) (*this)( { ' ' } );
 		
 		if ( state == block_comment || state == line_comment )
 			throw error( token, "Unterminated comment." );
@@ -473,7 +523,8 @@ public:
 			throw error( token, "Unterminated literal." );
 		if ( state == header_name ) // possible by ending file with a backslash
 			throw error( token, "Unterminated header name." );
-		if ( state != ws && state != after_newline ) throw error( token, "ICE: Phase 3 terminated in unexpected state." );
+		if ( state != ws && state != after_newline && state != space_run )
+			throw error( token, "ICE: Phase 3 terminated in unexpected state." );
 		
 		if ( ! token.s.empty() ) pass();
 	}

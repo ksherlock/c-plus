@@ -5,7 +5,6 @@
 #define CPLUS_FORMATS
 
 #include "framework.h"
-#include <set>
 
 namespace cplus {
 
@@ -18,20 +17,16 @@ struct inclusion : instantiation { // source file (e.g. header) inclusion instan
 // Output format for Phases 1-2
 CPLUS_IMPORTABLE_ENUM( pp_char_source, normal, ucn, trigraph )
 
-enum class file_location : location_t {
-	column_shift = 32, // columns in MSW so they simply wrap around on overflow
-	column_increment = location_t( 1 ) << column_shift,
-	line_mask = column_increment - 1
-};
-location_t operator>> ( location_t lhs, file_location rhs ) { return lhs >>= location_t( rhs ); }
-location_t &operator+= ( location_t &lhs, file_location rhs ) { return lhs += location_t( rhs ); }
-location_t operator- ( location_t lhs, file_location rhs ) { return lhs -= location_t( rhs ); }
-location_t operator& ( location_t lhs, file_location rhs ) { return lhs &= location_t( rhs ); }
+namespace file_location {
+	int const column_shift = 32; // columns in MSW so they simply wrap around on overflow
+	location_t const column_increment = location_t( 1 ) << column_shift,
+					line_mask = column_increment - 1;
+}
 
 struct config_pragma_base : config_base {
 	typedef std::function< void( tokens && ) > pragma_function;
 	typedef std::map< string, pragma_function > pragma_map;
-	typedef std::initializer_list< pragma_map::value_type > pragma_handler_list; // array would suffice but can't be empty
+	typedef std::initializer_list< pragma_map::value_type > pragma_handler_list; // C array would suffice but can't be empty
 	pragma_handler_list pragma_handlers() { return {}; } // (non-virtual) override in derived class
 };
 struct propagate_pragma {}; // exception indicates pragma handler is defaulting
@@ -102,7 +97,7 @@ struct phase4_config : config_pragma_base {
 	std::vector< string > user_paths, system_paths; // header search set
 	
 	void push_paths( std::vector< string > &pathlist, tokens &&in )
-		{ for ( auto &path : in ) pathlist.push_back( { destringize( std::move( path.s ) ).c_str(), macro_pool } ); }
+		{ for ( auto &path : in ) pathlist.push_back( repool( destringize( std::move( path.s ) ).c_str(), macro_pool ) ); }
 	pragma_handler_list pragma_handlers() {
 		static pragma_handler_list ret = {
 			{ "system_path", pragma_function( [this]( tokens &&in ) { push_paths( system_paths, std::move( in ) ); } ) },

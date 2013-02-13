@@ -14,24 +14,14 @@
 #include <utility>
 #include <vector>
 #include <memory>
+#include <tuple>
 #include <map>
+
+#include <cassert>
 
 #ifndef CPLUS_USE_STD_STRING
 #include "string.h"
 
-#elif defined( __GNUC__ )
-#include <string>
-#include <ext/mt_allocator.h>
-
-namespace cplus {
-typedef std::basic_string< char, std::char_traits< char >, __gnu_cxx::__mt_alloc< char > > string;
-
-struct string_pool : __gnu_cxx::__mt_alloc< char >
-	{ string_pool( char const * ) {} };
-string_pool literal_pool( "" );
-
-int stoi( string const &in ) { return stoi( std::string( in ) ); }
-}
 #else
 #include <string>
 
@@ -41,7 +31,9 @@ using std::string;
 struct string_pool : std::allocator< char >
 	{ string_pool( char const * ) {} };
 string_pool literal_pool( "" );
+string repool( string s, string_pool p ) { return { s.c_str(), p }; }
 }
+
 #endif
 
 namespace cplus {
@@ -52,47 +44,48 @@ struct stage_base {};
 template< typename base_type, typename ... config_types >
 struct derived_stage : base_type {
 	typedef base_type base;
-	typedef typename std::is_same< base_type, stage_base >::type base_stage_tag; // whether NOT derived from another stage
 	typedef std::tuple< config_types ... > used_configs; // not to be instantiated, just a pack container
 
+	void flush() {}
+	
 protected:
 	template< typename ... args >
 	derived_stage( args && ... a )
 		: base( std::forward< args >( a ) ... ) {}
-	derived_stage( derived_stage && ) = delete;
-	derived_stage( derived_stage const & ) = delete;
 };
-
-template< typename s >
-typename std::enable_if< ! s::base_stage_tag::value, void >::type
-finalize( s &o ) {
-	o.flush();
-	finalize( static_cast< typename s::derived_stage::base & >( o ) );
-}
 
 // Non-virtual abstract base class.
 template< typename output_iterator, typename ... config_types >
 struct stage : derived_stage< stage_base, config_types ... > {
-	void flush() {}
-	
-	output_iterator cont;
+	typename std::conditional< util::is_dereferenceable< output_iterator >::value, output_iterator,
+								util::output_iterator_from_functor< output_iterator > >::type
+		cont;
 	
 protected:
 	template< typename ... args >
 	stage( args && ... a )
 		: cont( std::forward< args >( a ) ... ) {}
+	stage( stage && ) = delete;
+	stage( stage const & ) = delete;
 };
+
+void finalize( util::poor_conversion const & ) {} // fallback overload, worse than derived-to-base conversion
+
+template< typename s >
+typename std::enable_if< ! std::is_same< typename s::base, stage_base >::value >::type
+finalize( s &o ) {
+	o.flush();
+	finalize( static_cast< typename s::base & >( o ) );
+}
 
 /*	Each pipeline step chains to finalize for the next one. When an iterator without
 	finalize is reached, synchronization stops. That iterator should be the last. */
 template< typename s >
-typename std::enable_if< s::base_stage_tag::value, void >::type
+typename std::enable_if< std::is_same< typename s::base, stage_base >::value >::type
 finalize( s &o ) {
 	o.flush();
 	finalize( o.cont );
 }
-
-void finalize( util::poor_conversion const & ) {} // fallback overload, worse than derived-to-base conversion
 
 template< typename t >
 void finalize( std::reference_wrapper< t > const & ) {} // Do not propagate termination through references.
@@ -107,10 +100,12 @@ struct token {
 	void assign_content( token const &rhs )
 		{ type = rhs.type; s = rhs.s; }
 	token reallocate( string_pool &pool ) const
-		{ return { type, { s, pool }, source, location }; }
+		{ return { type, repool( s, pool ), source, location }; }
 	
 	friend bool operator== ( token const &l, token const &r )
 		{ return l.type == r.type && l.s == r.s; }
+	friend bool operator!= ( token const &l, token const &r )
+		{ return ! ( l == r ); }
 };
 typedef std::vector< token > tokens;
 
@@ -142,11 +137,11 @@ protected:
 public:
 	template< typename config_type >
 	config_type &get_config() {
-		auto entry = registry.insert( std::make_pair( std::type_index( typeid( config_type ) ), nullptr ) );
-		if ( entry.second ) {
-			entry.first->second.reset( new config_type() ); // config struct gets value initialized
+		auto entry = registry.find( typeid( config_type ) );
+		if ( entry == registry.end() ) {
+			entry = registry.insert( std::make_pair( std::type_index( typeid( config_type ) ), std::unique_ptr< config_base >( new config_type() ) ) ).first; // config struct gets value initialized
 		}
-		return static_cast< config_type & >( * entry.first->second );
+		return static_cast< config_type & >( * entry->second );
 	}
 	
 	template< typename ... args >
@@ -204,6 +199,31 @@ struct configured_stage_from_functor< std::reference_wrapper< ftor >, std::tuple
 	typename std::enable_if< std::is_base_of< config_manager_base, ftor >::value, client & >::type
 	get_config() { return this->get().template get_config< client >(); }
 };
+
+template< typename cont, template< typename ... > class ... stages >
+struct stack_stages;
+
+template< typename cont >
+struct stack_stages< cont >
+	{ typedef cont type; };
+
+template< typename cont, template< typename ... > class stage, template< typename ... > class ... rem >
+struct stack_stages< cont, stage, rem ... >
+	{ typedef configured_stage_from_functor< stage< typename stack_stages< cont, rem ... >::type > > type; };
+
+template< template< typename ... > class ... stages, typename cont, typename ... aux >
+typename stack_stages< cont, stages ... >::type
+autoconfigured_pile( cont && c, aux && ... a )
+	{ return { std::forward< aux >( a ) ..., std::forward< cont >( c ) }; }
+
+/*template< typename cont >
+cont autoconfigured_pile( cont &&c )
+	{ return std::forward< cont >( c ); }
+
+template< template< typename ... > class stage, template< typename ... > class ... rem, typename cont, typename ... aux >
+configured_stage_from_functor< stage< decltype( autoconfigured_pile< rem ... >( std::declval< cont >() ) ) > >
+autoconfigured_pile( cont && c, aux && ... a )
+	{ return { std::forward< aux >( a ) ..., std::forward< cont >( c ) }; }*/
 
 }
 

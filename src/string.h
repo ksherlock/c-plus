@@ -5,124 +5,141 @@
 #define CPLUS_STRING
 
 #include <algorithm>
-#include <random>
 #include <cassert>
 
 namespace cplus {
+namespace gc {
+
+template< typename client >
+struct observer;
+
+template< typename client >
+struct observers {
+	observer< client > *first;
+	observers() : first{} {}
+};
+
+struct pool_base {
+	void *writer;
+};
+
+template< typename ... clients >
+struct pool : observers< clients > ..., pool_base {
+};
+
+template< typename client >
+struct observer {
+	pool_base *a;
+	observer *prec, *succ; // would be private but derived provides pool dump facility
+	client *p;
+	
+	bool is_registered() const // only a moved-from value may be unregistered
+		{ return prec != nullptr; }
+	bool is_writer() const // only one object within the pool may be open for writing
+		{ return a->writer == this; }
+	
+	template< typename ... clients >
+	observer( pool< clients ... > &in_a ) // construct new object in particular allocator
+		: a( & in_a )
+		{ register_( in_a ); }
+	observer( observer const &o ) // nothing special, construct object to receive a copy of another
+		: a( o.a )
+		{ register_(); }
+	observer( observer &&o ) // move construction invalidates source and slightly reduces overhead
+		: a( o.a ) {
+		if ( ! o.is_registered() ) {
+			register_();
+			return;
+		}
+		/*if ( o.prec == nullptr ) {
+			register_();
+			#if DUMP_STRING_ACTIVITY
+			std::cerr << a->name << ": resurrect " << &o << " as " << this << "\n";
+			#endif
+			return;
+		}*/
+		inherit_links( o );
+		o.prec->succ = o.succ->prec = this; // usurp source's links
+		prec = o.prec;
+		succ = o.succ;
+		//std::cerr << a->handle_count << " + " << this << " - " << & o << " ( " << a->name << ": " << prec << " -- " << succ << " )\n";
+		o.invalidate(); // invalidate source
+		assert ( ( a->handle_count == 1 ) == ( succ == this && succ == prec && succ == a->handle_first ) );
+	}
+	
+	observer &operator= ( observer const &o ) {
+		assert ( & o != this ); // Derived class must handle copy to self.
+		assert ( & o != a->writer ); // Derived class must close source writer before copy within same pool.
+		if ( o.a == a && is_registered() ) {
+			//if ( a->writer == &o ) a->writer = static_cast< string_base * >( this );
+			return * this;
+		}
+		unregister();
+		a = o.a;
+		//if ( a->writer == &o ) a->writer = static_cast< string_base * >( this );
+		register_();
+		return * this;
+	}
+	observer &operator= ( observer &&o ) {
+		assert ( & o != this ); // Would just be early exit, but this shouldn't happen.
+		assert ( a == o.a ); // Derived class must do a copy, can't move between pools.
+		if ( ! is_registered() ) register_();
+		inherit_links( o );
+		o.unregister();
+		o.invalidate();
+		return * this;
+	}
+	~observer() noexcept { unregister(); }
+
+private:
+	void register_( observer *succ_val ) {
+		//static std::minstd_rand r;
+		
+		prec = succ = this;
+		++ a->handle_count;
+		if ( a->handle_count == 1 ) {
+			succ_val = this; // or (re)initialize list
+			a->handle_first = static_cast< string_base * >( this ); // new string is new beginning
+		}
+		std::swap( prec, succ_val->prec );
+		std::swap( succ, prec->succ );
+		
+		//std::cerr << a->handle_count << " + " << this << " ( " << a->name << ": " << prec << " -- " << succ << " )\n";
+		assert ( ( a->handle_count == 1 ) == ( succ == this && succ == prec && succ == a->handle_first ) );
+	}
+	void unregister() {
+		if ( ! is_registered() ) return;
+		prec->succ = succ;
+		succ->prec = prec;
+		if ( a->handle_first == this ) a->handle_first = static_cast< string_base * >( succ );
+		if ( a->writer == this ) a->writer = nullptr;
+		-- a->handle_count;
+		
+		//std::cerr << a->handle_count << " - " << this << " ( " << a->name << ": " << prec << " -- " << succ << " )\n";
+		assert ( ( a->handle_count <= 1 ) == ( succ == prec && succ == a->handle_first ) );
+	}
+	
+	void invalidate() {
+		assert ( a->handle_first != this );
+		assert ( a->writer != this );
+		prec = nullptr;
+	}
+	void inherit_links( observer const &o ) { // this is the only way writership may be passed without writing something
+		if ( a->handle_first == & o ) a->handle_first = static_cast< string_base * >( this );
+		if ( a->writer == this ) {
+			a->writer = nullptr;
+		} else if ( a->writer == & o ) {
+			a->writer = this;
+			#if DUMP_STRING_ACTIVITY
+			std::cerr << a->name << ": move writer = " << a->writer << '\n';
+			#endif
+		}
+	}
+};
 
 class string_pool {
 public:
-	struct client {
-		string_pool *a;
-		client *prec, *succ; // would be private but derived provides pool dump facility
-		
-		bool is_registered() const // only a moved-from value may be unregistered
-			{ return prec != nullptr; }
-		bool is_writer() const // only one object within the pool may be open for writing
-			{ return a->writer == this; }
-		
-		client( string_pool &in_a ) // construct new object in particular allocator
-			: a( & in_a )
-			{ register_(); }
-		client( client const &o ) // nothing special, construct object to receive a copy of another
-			: a( o.a )
-			{ register_(); }
-		client( client &&o ) // move construction invalidates source and slightly reduces overhead
-			: a( o.a ) {
-			if ( o.prec == nullptr ) {
-				register_();
-				return;
-			}
-			/*if ( o.prec == nullptr ) {
-				register_();
-				#if DUMP_STRING_ACTIVITY
-				std::cerr << a->name << ": resurrect " << &o << " as " << this << "\n";
-				#endif
-				return;
-			}*/
-			inherit_links( o );
-			o.prec->succ = o.succ->prec = this; // usurp source's links
-			prec = o.prec;
-			succ = o.succ;
-			//std::cerr << a->handle_count << " + " << this << " - " << & o << " ( " << a->name << ": " << prec << " -- " << succ << " )\n";
-			o.invalidate(); // invalidate source
-			assert ( ( a->handle_count == 1 ) == ( succ == this && succ == prec && succ == a->handle_first ) );
-		}
-		
-		client &operator= ( client const &o ) {
-			assert ( & o != this ); // Derived class must handle copy to self.
-			assert ( & o != a->writer ); // Derived class must close source writer before copy within same pool.
-			if ( o.a == a && prec != nullptr ) {
-				//if ( a->writer == &o ) a->writer = static_cast< string_base * >( this );
-				return * this;
-			}
-			unregister();
-			a = o.a;
-			//if ( a->writer == &o ) a->writer = static_cast< string_base * >( this );
-			register_();
-			return * this;
-		}
-		client &operator= ( client &&o ) {
-			assert ( & o != this ); // Would just be early exit, but this shouldn't happen.
-			assert ( a == o.a ); // Derived class must do a copy, can't move between pools.
-			if ( prec == nullptr ) register_();
-			inherit_links( o );
-			o.unregister();
-			o.invalidate();
-			return * this;
-		}
-		~client() noexcept { unregister(); }
-	
-	private:
-		void register_() {
-			//static std::minstd_rand r;
-			
-			prec = succ = this;
-			client *succ_val = a->handle_first; // common case: add to end of list (circular so before beginning = end)
-			++ a->handle_count;
-			//if ( r() % ++ a->handle_count == 0 ) { // first and O(1/N) case: add to beginning of list
-				if ( a->handle_count == 1 ) {
-					//std::cerr << "initialize list\n";
-					succ_val = this; // or (re)initialize list
-			//	} //else std::cerr << "add to front\n";
-				a->handle_first = static_cast< string_base * >( this ); // new string is new beginning
-			}
-			std::swap( prec, succ_val->prec );
-			std::swap( succ, prec->succ );
-			
-			//std::cerr << a->handle_count << " + " << this << " ( " << a->name << ": " << prec << " -- " << succ << " )\n";
-			assert ( ( a->handle_count == 1 ) == ( succ == this && succ == prec && succ == a->handle_first ) );
-		}
-		void unregister() {
-			if ( ! prec ) return;
-			prec->succ = succ;
-			succ->prec = prec;
-			if ( a->handle_first == this ) a->handle_first = static_cast< string_base * >( succ );
-			if ( a->writer == this ) a->writer = nullptr;
-			-- a->handle_count;
-			
-			//std::cerr << a->handle_count << " - " << this << " ( " << a->name << ": " << prec << " -- " << succ << " )\n";
-			assert ( ( a->handle_count <= 1 ) == ( succ == prec && succ == a->handle_first ) );
-		}
-		
-		void invalidate() {
-			assert ( a->handle_first != this );
-			assert ( a->writer != this );
-			prec = nullptr;
-		}
-		void inherit_links( client const &o ) { // this is the only way writership may be passed without writing something
-			if ( a->handle_first == & o ) a->handle_first = static_cast< string_base * >( this );
-			if ( a->writer == this ) {
-				a->writer = nullptr;
-			} else if ( a->writer == & o ) {
-				a->writer = this;
-				#if DUMP_STRING_ACTIVITY
-				std::cerr << a->name << ": move writer = " << a->writer << '\n';
-				#endif
-			}
-		}
-	};
-	struct string_base : client {
+	struct string_base : observer {
 		char *p;
 		
 		void close() {
@@ -154,14 +171,24 @@ public:
 		}
 		
 		string_base( string_pool &in_a )
-			: client( in_a ), p( nullptr ) { a->allocate( * this, 0 ); }
+			: observer( in_a ), p( nullptr ) { a->allocate( * this, 0 ); }
+	};
+	
+	struct client {
+		void *operator new( std::size_t size, string_pool &p ) {
+			std::size_t align = std::min( size & - size, alignof (std::max_align_t) ), dummy = -1;
+			p->allocate( this, 0 );
+			util::align( align, 0, reinterpret_cast< void *& >( p->pen ), dummy );
+			return p->bump( size );
+		}
+		void operator delete( void * ) {}
 	};
 	
 private:
 	string_base *handle_first;
 	std::size_t handle_count;
 	
-	enum { chunk_size = 1 << 20 };
+	enum { chunk_size = 1 << 12 };
 	typedef std::unique_ptr< char[] > chunk_handle;
 	std::vector< chunk_handle > chunks;
 	char *cur_chunk;
@@ -172,8 +199,8 @@ private:
 		chunks.insert( chunk_insertion, std::move( c ) );
 	}
 public:
-	char *pen;
-	client *writer;
+	void *pen;
+	observer *writer;
 	
 	char const *name;
 	
@@ -181,22 +208,23 @@ public:
 		: handle_first( nullptr ), handle_count( 0 ), writer( nullptr ), name( in_name )
 		{ add_chunk(); pen = cur_chunk; }
 	string_pool( string_pool const & ) = delete;
-/*		: handle_first( nullptr ), handle_count( 0 ), writer( nullptr ), name( "clone" )
-		{ add_chunk(); pen = * cur_chunk; }*/
 	string_pool( string_pool && ) = default;
 	~string_pool() noexcept { assert ( handle_count == 0 ); }
-
-	char *bump( std::ptrdiff_t n = 1, bool do_dump = true ) {
-		if ( n > cur_chunk + chunk_size - pen ) return bump_chunk( n, do_dump );
+	
+	template< typename t = char >
+	t *bump( std::ptrdiff_t n = 1, bool do_dump = true ) {
+		if ( n * sizeof (t) > cur_chunk + chunk_size - static_cast< char * >( pen ) ) {
+			return bump_chunk( n, do_dump );
+		}
 		#if DUMP_STRING_ACTIVITY
 		if ( n > 1 ) std::cerr << "internal bump " << n << '\n';
 		#endif
 		pen += n;
-		//std::uninitialized_fill_n( pen - n, n, 0xff );
 		return pen - n;
 	}
 	
-	char *bump_chunk( std::ptrdiff_t n = 1, bool do_dump = true ) {
+	template< typename t = char >
+	t *bump_chunk( std::ptrdiff_t n, bool do_dump ) {
 		if ( n > chunk_size ) too_big: throw std::length_error( "String size exceeds pool chunk size." );
 		
 		std::vector< bool > used_chunks( chunks.size() );
@@ -253,16 +281,16 @@ public:
 	
 	void dump();
 	
-	void allocate( string_base &client, std::size_t n ) {
+	void allocate( string_base &observer, std::size_t n ) {
 		if ( writer ) { // Close writer. This should have some kind of polymorphism.
 			static_cast< string_base * >( writer )->close();
 		}
 		
-		client.p = bump( n + 1, false ) + 1;
-		writer = & client;
+		observer.p = bump( n + 1, false ) + 1;
+		writer = & observer;
 		
 		#if DUMP_STRING_ACTIVITY
-		std::cerr << name << ": open writer = " << writer << ": " << (void*) client.p << '\n';
+		std::cerr << name << ": open writer = " << writer << ": " << (void*) observer.p << '\n';
 		#endif
 	}
 	
@@ -516,11 +544,13 @@ void string_pool::dump() {
 int stoi( string const &s ) { return stoi( std::string( s ) ); }
 
 }
+
+}
 namespace std {
 template<>
 struct hash< cplus::string > {
 	std::size_t operator() ( cplus::string const &s ) const {
-		std::size_t ret = static_cast< std::size_t >( 0x597316AC597316AC );
+		std::size_t ret = static_cast< std::size_t >( 0x597316AC597316A9 );
 		for ( auto c : s ) ret *= c; // no null bytes allowed!
 		return ret;
 	}

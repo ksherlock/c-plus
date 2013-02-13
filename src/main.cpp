@@ -83,16 +83,13 @@ int main( int argc, char *argv[] ) {
 	int status = 0;
 	std::setlocale( LC_ALL, "" );
 	
-	cplus::configured_stage_from_functor< cplus::phase1_2<
-	cplus::configured_stage_from_functor< cplus::phase3<
-	cplus::configured_stage_from_functor< cplus::phase4<
-	cplus::configured_stage_from_functor< cplus::pragma_filter<
-	cplus::util::output_iterator_from_functor< std::function< void (cplus::token &&) >
-		> > > > > > > > > pile( nullptr, []( cplus::token &&token )
+	int count = 0;
+	
+	auto && pile = cplus::autoconfigured_pile< cplus::phase1_2, cplus::phase3, cplus::phase4, cplus::pragma_filter >
+		( [&count]( cplus::token &&token ){ std::fwrite( token.s.c_str(), 1, token.s.size(), stdout ); }, nullptr );
 			//{ std::cout << '`' << token.s << '`' << int(token.type); }
-			{ std::cout << token.s << "·"; }
-			//{ std::fwrite( token.s.begin(), 1, token.s.size(), stdout ); }
-		);
+			//{ std::cout << token.s << "·"; }
+			//{ ++ count; }
 	
 	try {
 		char initialization[] =
@@ -113,6 +110,10 @@ int main( int argc, char *argv[] ) {
 		std::copy( std::istreambuf_iterator< char >{ std::cin }, std::istreambuf_iterator< char >{}, cplus::util::ref( pile ) );
 		finalize( pile );
 		
+		/*std::cerr << "fast x " << cplus::fast_dispatch << ", slow x " << cplus::slow_dispatch << '\n';
+		std::copy( std::begin( cplus::slow_histo ), std::end( cplus::slow_histo ), std::ostream_iterator< int >( std::cerr, ", " ) );
+		std::cerr << '\n' << "total passed " << count << '\n';
+		*/
 		//stream_handle.dump_siblings();
 		
 	} catch ( cplus::error &err ) {
@@ -122,5 +123,9 @@ int main( int argc, char *argv[] ) {
 		
 		status = 1;
 	}
+	
+	/*std::cerr << "fast x " << cplus::fast_path << ", slow x " << cplus::slow_path << '\n';
+	std::copy( std::begin( cplus::slow_histo ), std::end( cplus::slow_histo ), std::ostream_iterator< int >( std::cerr, ", " ) );
+	std::cerr << '\n';*/
 	return status;
 }

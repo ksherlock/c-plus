@@ -5,6 +5,7 @@
 #define CPLUS_UTIL
 
 #include <memory>
+#include <utility>
 #include <iterator>
 #include <stdexcept>
 #include <functional>
@@ -22,8 +23,6 @@ typedef TYPENAME ## _import_base :: TYPENAME TYPENAME;
 
 namespace cplus {
 
-using std::rel_ops::operator!=;
-
 namespace util {
 
 struct abc { inline virtual ~abc() = 0; };
@@ -35,12 +34,23 @@ typename std::decay< t >::type val( t &&o )
 
 void *align( std::size_t alignment, std::size_t size, void *&ptr, std::size_t &space ) {
 	auto pn = reinterpret_cast< std::size_t >( ptr );
-	auto aligned = pn + alignment - 1 & - alignment;
+	auto aligned = ( pn + alignment - 1 ) & - alignment;
 	auto new_space = space - ( aligned - pn );
 	if ( new_space < size ) return nullptr;
 	space = new_space;
 	return ptr = reinterpret_cast< void * >( aligned );
 }
+
+template< typename tup, typename elem, int offset = 0 >
+struct tuple_index;
+
+template< typename head, typename ... tail, typename elem, int offset >
+struct tuple_index< std::tuple< head, tail ... >, elem, offset >
+	{ enum { value = tuple_index< std::tuple< tail ... >, elem, offset + 1 >::value }; };
+
+template< typename ... tail, typename elem, int offset >
+struct tuple_index< std::tuple< elem, tail ... >, elem, offset >
+    { enum { value = offset }; };
 
 template< typename ftor >
 struct output_iterator_from_functor
@@ -72,8 +82,6 @@ struct output_iterator_ref
 	
 	output_iterator_ref( output_iterator &in )
 		: std::reference_wrapper< output_iterator >( in ) {}
-	
-	operator output_iterator & () { return this->get(); } // provides ++ and *; incompatible with member operator overloads
 };
 
 template< typename ftor >
@@ -140,6 +148,14 @@ template< typename output_iterator >
 output_iterator_from_functor< limit_range_ftor< output_iterator > >
 limit_range( output_iterator &&iter ) { return { std::move( iter ) }; }
 
+template< typename t, typename v = void >
+struct is_dereferenceable
+	: std::false_type {};
+
+template< typename t >
+struct is_dereferenceable< t, decltype( * std::declval< t & >(), void() ) >
+	: std::true_type {};
+
 class utf8_convert {
 	char32_t min;
 	int len;
@@ -169,37 +185,28 @@ public:
 		} else {
 			if ( c < 0x80 || c >= 0xC0 ) goto malformed;
 			result = result << 6 | ( c & 0x3F );
-			if ( -- len == 0 ) {
-				if ( result < min ) goto malformed;
-				return true;
-			
-			} else return false;
+			if ( -- len != 0 ) return false;
+			if ( result < min ) goto malformed;
+			return true;
 		}
 	}
 };
 
 namespace query {
-	char ctime_r( ... );
+	struct poor_converter // poor as poor_conversion, but less poor than "..."
+		{ template< typename t > operator t & () {} };
 	
-	struct has_ctime_r {
-		enum { value = sizeof ctime_r( std::declval< std::time_t * >(), std::declval< char * >() )
-						== sizeof( char * ) };
-	};
-
-	template< bool available > struct safest_ctime {
-		static char *call( std::time_t const *t, char *&r )
-			{ return ctime_r( t, r ); }
-	};
-
-	template<> struct safest_ctime< false > {
-		static char *call( std::time_t const *t, char *&r )
-			{ return r = std::ctime( t ); }
-	};
+	void ctime_r( ... ); // If ::ctime_r is to be found by unqualified lookup, the fallback must be found by ADL.
 }
 
-char *ctime( std::time_t const *t, char *&r )
-	{ return query::safest_ctime< query::has_ctime_r::value >().call( t, r ); }
+template< bool en = std::is_same< char *, decltype( ctime_r( query::poor_converter(), query::poor_converter() ) ) >::value >
+typename std::enable_if< en, char * >::type ctime( std::time_t const *t, char *&r )
+	{ return ctime_r( typename std::enable_if< en, std::time_t const * >::type( t ), r ); } // bogus dependency guards potentially undefined name
 
+template< bool en = std::is_same< char *, decltype( ctime_r( query::poor_converter(), query::poor_converter() ) ) >::value >
+typename std::enable_if< ! en, char * >::type ctime( std::time_t const *t, char *&r )
+	{ return r = std::ctime( t ); }
+	
 } } // end namespace cplus, end namespace util
 
 #endif

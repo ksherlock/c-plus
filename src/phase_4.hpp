@@ -27,56 +27,62 @@ inline std::string destringize( std::string in ) { // As described in §16.9. Al
 }
 
 inline intmax_t rudimentary_evaluate( tokens::iterator &pen, int min_precedence = 0 ) {
-	typedef intmax_t eval_t;
-	typedef std::map< string, std::tuple< std::function< eval_t( eval_t, eval_t ) >, int > > op_map;
-	static op_map postfix_operators{
-	#define SIMPLE_OP( op, prec ) { # op, op_map::mapped_type{ ( []( eval_t l, eval_t r ){ return l op r; } ), prec } }
+	using namespace pp_constants;
+	typedef intmax_t eval_t; // need a discriminated union of intmax_t and uintmax_t
+	typedef std::map< string, std::pair< std::function< eval_t( eval_t, eval_t ) >, int > > op_map;
+	static op_map binary_operators {
+	#define SIMPLE_OP( op, prec ) { # op, { []( eval_t l, eval_t r ){ return l op r; }, prec } }
 		SIMPLE_OP( *, 10 ), SIMPLE_OP( /, 10 ), SIMPLE_OP( %, 10 ),
 		SIMPLE_OP( +, 9 ), SIMPLE_OP( -, 9 ),
 		SIMPLE_OP( <<, 8 ), SIMPLE_OP( >>, 8 ),
 		SIMPLE_OP( <=, 7 ), SIMPLE_OP( >=, 7 ), SIMPLE_OP( <, 7 ), SIMPLE_OP( >, 7 ),
-		SIMPLE_OP( ==, 6 ), SIMPLE_OP( !=, 6 ), 
-		SIMPLE_OP( &, 5 ), SIMPLE_OP( ^, 4 ), SIMPLE_OP( |, 3 ), SIMPLE_OP( &&, 2 ), SIMPLE_OP( ||, 1 )
+		SIMPLE_OP( ==, 6 ), SIMPLE_OP( !=, 6 ), SIMPLE_OP( not_eq, 6 ),
+		SIMPLE_OP( &, 5 ), SIMPLE_OP( bitand, 5 ),
+		SIMPLE_OP( ^, 4 ), SIMPLE_OP( xor, 4 ),
+		SIMPLE_OP( |, 3 ), SIMPLE_OP( bitor, 3 ),
+		SIMPLE_OP( &&, 2 ), SIMPLE_OP( and, 2 ),
+		SIMPLE_OP( ||, 1 ), SIMPLE_OP( or, 1 )
 	#undef SIMPLE_OP
 	};
-	static std::map< string, std::function< eval_t( eval_t ) > > prefix_operators {
-	#define SIMPLE_OP( op ) { # op, std::function< eval_t( eval_t ) >( []( eval_t v ){ return op v; } ) }
-		SIMPLE_OP( + ), SIMPLE_OP( - ), SIMPLE_OP( ! ), SIMPLE_OP( ~ )
+	static std::map< string, std::function< eval_t( eval_t ) > > unary_operators {
+	#define SIMPLE_OP( op ) { # op, []( eval_t v ){ return op v; } }
+		SIMPLE_OP( + ), SIMPLE_OP( - ), SIMPLE_OP( ! ), SIMPLE_OP( ~ ),
+		SIMPLE_OP( not ), SIMPLE_OP( compl )
 	#undef SIMPLE_OP
 	};
 	
 	auto begin = pen;
-	while ( prefix_operators.count( pen->s ) ) ++ pen;
+	while ( unary_operators.count( pen->s ) ) ++ pen;
 	auto prefix_end = pen;
 	
 	eval_t acc;
-	if ( pen->s == "(" ) {
+	if ( * pen == lparen ) {
 		acc = rudimentary_evaluate( ++ pen );
-		if ( pen->s != ")" ) throw error( * pen, "Expected \")\"." );
+		if ( * pen != rparen ) throw error( * pen, "Expected \")\"." );
 	} else if ( pen->type == token_type::char_lit ) { // Very poor, but compliant, QOI. Wait for std::wstring_convert.
-		acc = pen->s[ pen->s.find( '\'' ) + 1 ]; // Just use first byte of UTF-8 or multichar literal.
+		acc = pen->s[ pen->s.find( '\'' ) + 1 ]; // Just use first byte of UTF-8 or multichar literal. Incorrectly gets backslash of escape seq.
 	} else if ( pen->type == token_type::num ) {
 		std::istringstream s( pen->s );
 		s.unsetf( std::ios::basefield ); // Enable hex and octal notations.
 		s >> acc;
 		if ( s.peek() == 'u' || s.peek() == 'U' ) s.ignore();
-		if ( ( s.peek() == 'l' || s.peek() == 'L' ) && s.peek() == s.str().back() ) s.ignore( 2 );
+		if ( ( s.peek() == 'l' || s.peek() == 'L' ) && s.peek() == s.str().back() ) s.ignore( 2 ); // 2 may be excessive, triggered by eg 1L
 		if ( ! s.ignore().eof() ) throw error( * pen, "Not an integer." );
-	} else if ( pen->s == "true" || pen->s == "false" ) {
-		acc = pen->s == "true";
+	} else if ( * pen == true_value || * pen == false_value ) {
+		acc = * pen == true_value;
 	} else throw error( * pen, "Expected a number." );
 	
-	while ( prefix_end != begin ) acc = prefix_operators[ ( -- prefix_end ) ->s ]( acc );
+	while ( prefix_end != begin ) acc = unary_operators[ ( -- prefix_end ) ->s ]( acc );
 	
 	++ pen;
-	while ( pen->s != "$" && pen->s != ")" && pen->s != ":" ) {
-		auto op = postfix_operators.find( pen->s );
-		if ( pen->s == "?" ) {
+	while ( pen->s != "$" && * pen != rparen && * pen != colon ) {
+		auto op = binary_operators.find( pen->s );
+		if ( * pen == conditional ) {
 			auto middle = rudimentary_evaluate( ++ pen );
-			if ( pen->s != ":" ) throw error( * pen, "Expected \":\"." );
+			if ( * pen != colon ) throw error( * pen, "Expected \":\"." );
 			auto end = rudimentary_evaluate( ++ pen ); // goes to end of expression
 			acc = acc? middle : end; // This is the final result; loop terminates now.
-		} else if ( op != postfix_operators.end() ) {
+		} else if ( op != binary_operators.end() ) {
 			int prec = std::get< 1 >( op->second );
 			if ( prec < min_precedence ) return acc;
 			acc = std::get< 0 >( op->second )( acc, rudimentary_evaluate( ++ pen, prec + 1 ) );
@@ -88,10 +94,10 @@ inline intmax_t rudimentary_evaluate( tokens::iterator &pen, int min_precedence 
 template< typename output_iterator >
 class phase4
 	: public derived_stage< substitution_phase< output_iterator >, phase3_config, phase4_config > {
-	typedef typename phase4::derived_stage base;
+	typedef typename phase4::derived_stage derived_stage;
 	
-	using base::input; // share state with macro context subobject
-	using base::macros; // and macro substitution driver subobject
+	using derived_stage::input; // share state with macro context subobject
+	using derived_stage::macros; // and macro substitution driver subobject
 	
 	phase4_config const &config;
 	
@@ -121,8 +127,8 @@ class phase4
 			preserve_defined_operator = macros.insert( { pp_constants::defined_operator.s, defined_preserver } ).second;
 		}
 		
-		util::output_iterator_from_functor< macro_context< util::output_iterator_from_functor<
-			macro_filter< std::back_insert_iterator< tokens > > > > > local( static_cast< macro_context_info & >( * this ), ret );
+		util::output_iterator_from_functor< macro_context< macro_filter< std::back_insert_iterator< tokens > > > >
+			local( static_cast< macro_context_info & >( * this ), ret );
 		std::move( first, last, ref( local ) );
 		local.flush();
 		
@@ -158,7 +164,7 @@ class phase4
 			auto macro = normalize_macro_definition( std::move( input ), config.macro_pool );
 			auto definition = macros.insert( macro );
 			if ( definition.second == false && * definition.first != macro )
-				throw error( macro.second.front(), "Definition does not match previous definition." );
+				throw error( macro.second.front(), "Macro definition does not match previous definition." );
 			
 		} else if ( * pen == pp_constants::undef_directive ) {
 			if ( skip_space( ++ pen, input.end() ) == input.end() )
@@ -213,7 +219,7 @@ class phase4
 			// 1st pass: normalize. "ifdef" => "defined", "ifndef " => "!defined", "if" and "elif" just get erased.
 			if ( * pen == pp_constants::ifdef_directive || * pen == pp_constants::ifndef_directive ) {
 				if ( * pen == pp_constants::ifndef_directive ) {
-					* pen ++ = { token_type::punct, "!" };
+					* pen ++ = pp_constants::bang;
 					if ( pen->type != token_type::ws ) throw error( * pen, "Expected space." ); // hah
 				}
 				* pen = pp_constants::defined_operator;
@@ -271,7 +277,9 @@ class phase4
 				
 				state = entering; // print new line number
 			}
-		} else throw error( * pen, "Non-directive." );
+		} else {
+			throw error( * pen, "Non-directive." );
+		}
 		
 		input.resize( 1 ); // preceding whitespace continues accumulation
 	}
@@ -382,7 +390,7 @@ class phase4
 		}
 	opened:
 		token name_r = pen->reallocate( config.macro_pool ),
-			name_s{ token_type::header_name, { "\"", config.macro_pool }, pen->source, pen->location };
+			name_s{ token_type::header_name, string{ "\"", config.macro_pool }, pen->source, pen->location };
 		for ( char c : name ) {
 			if ( c == '\\' || c == '"' ) name_s.s += '\\';
 			name_s.s += c;
@@ -435,7 +443,7 @@ class phase4
 public:
 	template< typename in_config3_type, typename in_config4_type, typename ... args >
 	phase4( in_config3_type &&c3, in_config4_type &&c, args && ... a )
-		: base( c3, macro_context_info::name_map{
+		: derived_stage( c3, macro_context_info::name_map{
 			{ pp_constants::stringize_macro.s, tokens{ pp_constants::variadic, pp_constants::rparen,
 										pp_constants::stringize, pp_constants::variadic } },
 			{ pp_constants::file_macro.s, tokens{ pp_constants::space } },
@@ -461,8 +469,8 @@ public:
 				static pragma_handler_list ret = {
 					{ "once", pragma_function( [this]( tokens &&in ) {
 						if ( ! in.empty() ) throw error( in[ 0 ], "This directive does not take an argument." );
-						master->guard_detect.guard = pp_constants::guard_default;
-						master->guard_current_header();
+						this->master->guard_detect.guard = pp_constants::guard_default;
+						this->master->guard_current_header();
 					} ) }
 				};
 				return ret;
@@ -471,21 +479,21 @@ public:
 		this->cont.template get_config< pp_master_config >().master = this; // restrictive to assume cont has config manager
 	}
 	
-	void operator()( token &&in ) {
+	void operator() ( token &&in ) {
 		using pp_constants::skip_space;
 		
 		switch ( state ) {
 		case entering: // one-shot state simply inserts whitespace #line directive if preserving space
 			if ( this->token_config.preserve_space && in.source ) {
-				base::operator() ( pp_constants::line_marker );
-				token loc = this->get_location( in, base::presumption::line );
+				phase4::base::operator() ( pp_constants::line_marker );
+				token loc = this->get_location( in, phase4::base::presumption::line );
 				loc.type = token_type::ws;
-				base::operator() ( std::move( loc ) );
-				base::operator() ( pp_constants::space );
-				loc = this->get_location( in, base::presumption::file );
+				phase4::base::operator() ( std::move( loc ) );
+				phase4::base::operator() ( pp_constants::space );
+				loc = this->get_location( in, phase4::base::presumption::file );
 				loc.type = token_type::ws;
-				base::operator() ( std::move( loc ) );
-				if ( in.s[0] != '\n' ) base::operator() ( pp_constants::newline );
+				phase4::base::operator() ( std::move( loc ) );
+				if ( in.s[0] != '\n' ) phase4::base::operator() ( pp_constants::newline );
 			}
 			state = normal;
 		
@@ -506,7 +514,7 @@ public:
 					return;
 				}
 			}
-			base::operator()( std::move( in ) );
+			phase4::base::operator() ( std::move( in ) );
 			return;
 		
 		case directive:
@@ -615,7 +623,7 @@ public:
 								throw error( in, "_Pragma operand must be a string (§16.9)." );
 							
 							tokens args;
-							phase3< std::back_insert_iterator< tokens >, false > tokenize( config3, in.source, args );
+							phase3< std::back_insert_iterator< tokens >, std::false_type > tokenize( config3, in.source, args );
 							in.s = destringize( std::move( in.s ) ).c_str();
 							for ( std::uint8_t c : in.s ) tokenize( { c, in.location } );
 							finalize( tokenize );
