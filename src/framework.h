@@ -49,15 +49,22 @@ struct derived_stage : base_type {
 	void flush() {}
 	
 protected:
-	template< typename ... args >
-	derived_stage( args && ... a )
-		: base( std::forward< args >( a ) ... ) {}
+	using base_type::base_type;
 };
+
+template< typename exception_type, typename output_iterator, typename ... args >
+auto pass_or_throw( output_iterator & o, args && ... a )
+	-> typename std::conditional< true, void, decltype( * o ++ = std::declval< exception_type >() ) >::type
+	{ * o ++ = exception_type{ std::forward< args >( a ) ... }; }
+
+template< typename exception_type, typename ... args >
+void pass_or_throw( util::poor_conversion, args && ... a )
+	{ throw exception_type( std::forward< args >( a ) ... ); } // G++ workaround, should be brace initialization
 
 // Non-virtual abstract base class.
 template< typename output_iterator, typename ... config_types >
 struct stage : derived_stage< stage_base, config_types ... > {
-	typename std::conditional< util::is_dereferenceable< output_iterator >::value, output_iterator,
+	typename std::conditional< util::is_output_iterator< output_iterator >::value, output_iterator,
 								util::output_iterator_from_functor< output_iterator > >::type
 		cont;
 	
@@ -67,6 +74,10 @@ protected:
 		: cont( std::forward< args >( a ) ... ) {}
 	stage( stage && ) = delete;
 	stage( stage const & ) = delete;
+	
+	template< typename exception_type, typename ... args >
+	void pass_or_throw( args && ... a )
+		{ cplus::pass_or_throw< exception_type >( cont, std::forward< args >( a ) ... ); }
 };
 
 void finalize( util::poor_conversion const & ) {} // fallback overload, worse than derived-to-base conversion
@@ -123,6 +134,34 @@ struct error : std::runtime_error {
 		: std::runtime_error( what ), p( pos ) {}
 };
 
+template< template< typename ... > class stage, typename ... args >
+struct bind_stage {
+	template< typename cont >
+	using temp = stage< cont, args ... >;
+};
+
+template< typename output_iterator, typename functor_type >
+struct terminal_stage : functor_type, stage< output_iterator > {
+	template< typename in_functor_type, typename ... args >
+	terminal_stage( in_functor_type && in_fn, args && ... a )
+		: functor_type( std::forward< in_functor_type >( in_fn ) ), terminal_stage::stage( std::forward< args >( a ) ... ) {}
+	
+	terminal_stage( terminal_stage && o )
+		: functor_type( std::move( o ) ), terminal_stage::stage( std::move( o.cont ) ) {}
+};
+
+template< typename output_iterator, typename functor_type >
+terminal_stage< output_iterator, functor_type >
+make_terminal_stage( functor_type && in_fn, output_iterator && in_cont )
+	{ return { std::move( in_fn ), std::move( in_cont ) }; }
+
+#if 0 // use if needed
+template< typename output_iterator, typename functor_type, typename ... args >
+terminal_stage< output_iterator, functor_type >
+make_terminal_stage( functor_type && in_fn, args && ... a )
+	{ return { std::move( in_fn ), std::forward< args >( a ) ... }; }
+#endif
+
 // Stage parameterization and pragma distribution.
 struct config_base : util::abc {
 	config_base() = default;
@@ -149,7 +188,8 @@ public:
 		: config_manager::stage( std::forward< args >( a ) ... ) {}
 	
 	template< typename t >
-	void operator() ( t &&in ) { * this->cont ++ = std::forward< t >( in ); }
+	typename std::enable_if< util::cont_is_assignable< config_manager, t >::value >::type
+	operator() ( t &&in ) { * this->cont ++ = std::forward< t >( in ); }
 };
 
 template< typename ftor, typename = void >
