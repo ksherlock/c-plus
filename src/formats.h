@@ -41,13 +41,13 @@ struct phase1_2_config : config_pragma_base {
 	bool disable_trigraphs;
 	
 	pragma_handler_list pragma_handlers() {
-		static pragma_handler_list ret = { { "trigraphs", pragma_function/*G++ workaround*/( [this]( tokens &&in ) {
+		static pragma_handler_list ret = { { "trigraphs", [this]( tokens &&in ) {
 			if ( in.size() != 1 ) bad_bool:
 				throw error( in.empty()? token() : in[ 0 ], "Expected a numeric Boolean value." );
 			try { disable_trigraphs = ! stoi( in[ 0 ].s ); }
 			catch ( ... ) { goto bad_bool; }
-		} ) } };
-		return ret; // this is obviously wrong, but G++ seems to want to prematurely destroy the initializer_list
+		} } };
+		return ret;
 	}
 };
 
@@ -62,13 +62,13 @@ struct phase3_config : config_pragma_base {
 	bool preserve_space;
 	
 	pragma_handler_list pragma_handlers() {
-		static pragma_handler_list ret = { { "preserve_space", pragma_function/*G++ workaround*/( [this]( tokens &&in ) {
+		static pragma_handler_list ret = { { "preserve_space", [this]( tokens &&in ) {
 			if ( in.size() != 1 ) bad_bool:
 				throw error( in.empty()? token() : in[ 0 ], "Expected a numeric Boolean value." );
 			try { preserve_space = stoi( in[ 0 ].s ); }
 			catch ( ... ) { goto bad_bool; }
-		} ) } };
-		return ret; // this is obviously wrong, but G++ seems to want to prematurely destroy the initializer_list
+		} } };
+		return ret;
 	}
 	phase3_config() : stream_pool( "stream" ), preserve_space( false ) {}
 };

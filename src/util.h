@@ -183,14 +183,12 @@ struct add_ftor;
 }} namespace std {
 template< typename base, typename ftor >
 struct common_type< base, cplus::util::add_ftor< ftor > > {
-	struct type_ : base {
+	typedef struct : base {
 		using base::operator ();
 		using ftor::operator ();
 		
-		template< typename ... args >
-		type_( args && ... a ) : base( std::forward< args >( a ) ... ) {} // G++ workaround, should inherit, using base::base;
-	};
-	typedef type_ type;
+		using base::base;
+	} type;
 };
 } namespace cplus { namespace util {
 

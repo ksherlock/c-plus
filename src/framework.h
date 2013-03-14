@@ -49,7 +49,7 @@ struct derived_stage : base_type {
 	void flush() {}
 	
 protected:
-	using base_type::base_type;
+	using base::base;
 };
 
 template< typename exception_type, typename output_iterator, typename ... args >
@@ -59,7 +59,7 @@ auto pass_or_throw( output_iterator & o, args && ... a )
 
 template< typename exception_type, typename ... args >
 void pass_or_throw( util::poor_conversion, args && ... a )
-	{ throw exception_type( std::forward< args >( a ) ... ); } // G++ workaround, should be brace initialization
+	{ throw exception_type{ std::forward< args >( a ) ... }; }
 
 // Non-virtual abstract base class.
 template< typename output_iterator, typename ... config_types >
