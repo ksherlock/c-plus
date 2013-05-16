@@ -38,6 +38,46 @@ string repool( string s, string_pool p ) { return { s.c_str(), p }; }
 
 namespace cplus {
 
+template< typename fn, typename v >
+typename std::enable_if< util::has_member_type< std::result_of< fn( v ) > >::value
+					&& util::has_member_type< std::result_of< fn( std::exception & ) > >::value >::type
+pass( fn && obj, v && val ) {
+	try {
+		obj( std::forward< v >( val ) );
+	} catch ( std::exception & e ) {
+		pass( std::forward< fn >( obj ), e );
+	}
+}
+
+template< typename fn, typename v >
+typename std::enable_if< util::has_member_type< std::result_of< fn( v ) > >::value
+					&& ! util::has_member_type< std::result_of< fn( std::exception & ) > >::value >::type
+pass( fn && obj, v && val )
+	{ obj( std::forward< v >( val ) ); }
+
+template< typename oit, typename v >
+auto pass( oit it, v && val )
+	-> typename std::conditional< false, decltype( * it ++ = std::forward< v >( val ) ), void >::type
+	{ * it ++ = std::forward< v >( val ); }
+
+template< typename obj, typename iit >
+void pass( iit first, iit last, obj && o ) {
+	for ( ; first != last; ++ first ) {
+		pass( std::forward< obj >( o ), * first );
+	}
+}
+
+namespace util { namespace query {
+poor_converter pass( poor_conversion, poor_conversion ); // accessible to impl:: but not to cplus::
+
+namespace impl {
+template< typename fn, typename v >
+typename std::enable_if< std::is_same< poor_converter, decltype( pass( std::declval< fn >(), std::declval< v >() ) ) >::value >::type
+pass( fn && obj, v && val ) // not visible to self because not impl is not associated with argument type
+	{ pass( obj.cont, std::forward< v >( val ) ); }
+}}}
+using namespace util::query::impl;
+
 struct stage_base {};
 
 // Adaptor for deriving one stage from another and using base's output iterator.
@@ -64,9 +104,7 @@ void pass_or_throw( util::poor_conversion, args && ... a )
 // Non-virtual abstract base class.
 template< typename output_iterator, typename ... config_types >
 struct stage : derived_stage< stage_base, config_types ... > {
-	typename std::conditional< util::is_output_iterator< output_iterator >::value, output_iterator,
-								util::output_iterator_from_functor< output_iterator > >::type
-		cont;
+	output_iterator cont;
 	
 protected:
 	template< typename ... args >
@@ -134,12 +172,6 @@ struct error : std::runtime_error {
 		: std::runtime_error( what ), p( pos ) {}
 };
 
-template< template< typename ... > class stage, typename ... args >
-struct bind_stage {
-	template< typename cont >
-	using temp = stage< cont, args ... >;
-};
-
 template< typename output_iterator, typename functor_type >
 struct terminal_stage : functor_type, stage< output_iterator > {
 	template< typename in_functor_type, typename ... args >
@@ -186,10 +218,6 @@ public:
 	template< typename ... args >
 	config_manager( args && ... a )
 		: config_manager::stage( std::forward< args >( a ) ... ) {}
-	
-	template< typename t >
-	typename std::enable_if< util::cont_is_assignable< config_manager, t >::value >::type
-	operator() ( t &&in ) { * this->cont ++ = std::forward< t >( in ); }
 };
 
 template< typename ftor, typename = void >
@@ -205,10 +233,10 @@ struct configured_stage_from_functor;
 
 template< typename ftor, typename ... used_configs >
 struct configured_stage_from_functor< ftor, std::tuple< used_configs ... > >
-	: util::output_iterator_from_functor< ftor > {
+	: ftor {
 	template< typename ... args >
 	configured_stage_from_functor( args && ... a )
-		: util::output_iterator_from_functor< ftor >(
+		: ftor(
 			/*	Since the config_manager is likely in a base subobject, use lazy evaluation so it's called
 				inside the ftor's constructor, after base initialization. */
 			util::make_implicit_thunk( std::bind(
@@ -227,9 +255,9 @@ struct configured_stage_from_functor< ftor, std::tuple< used_configs ... > >
 
 template< typename ftor >
 struct configured_stage_from_functor< std::reference_wrapper< ftor >, std::tuple<> >
-	: util::output_iterator_from_functor< std::reference_wrapper< ftor > > {
+	: std::reference_wrapper< ftor > {
 	configured_stage_from_functor( ftor &a )
-		: util::output_iterator_from_functor< std::reference_wrapper< ftor > >( a ) {}
+		: std::reference_wrapper< ftor >( a ) {}
 	
 	template< typename client >
 	typename std::enable_if< ! std::is_base_of< config_manager_base, ftor >::value, client & >::type
@@ -255,15 +283,6 @@ template< template< typename ... > class ... stages, typename cont, typename ...
 typename stack_stages< cont, stages ... >::type
 autoconfigured_pile( cont && c, aux && ... a )
 	{ return { std::forward< aux >( a ) ..., std::forward< cont >( c ) }; }
-
-/*template< typename cont >
-cont autoconfigured_pile( cont &&c )
-	{ return std::forward< cont >( c ); }
-
-template< template< typename ... > class stage, template< typename ... > class ... rem, typename cont, typename ... aux >
-configured_stage_from_functor< stage< decltype( autoconfigured_pile< rem ... >( std::declval< cont >() ) ) > >
-autoconfigured_pile( cont && c, aux && ... a )
-	{ return { std::forward< aux >( a ) ..., std::forward< cont >( c ) }; }*/
 
 }
 

@@ -7,6 +7,7 @@
 #include <memory>
 #include <utility>
 #include <iterator>
+#include <algorithm>
 #include <stdexcept>
 #include <functional>
 #include <type_traits>
@@ -24,6 +25,16 @@ typedef TYPENAME ## _import_base :: TYPENAME TYPENAME;
 namespace cplus {
 
 namespace util {
+
+struct poor_conversion {
+	template< typename t >
+	poor_conversion( t const & ) {}
+};
+
+namespace query {
+struct poor_converter // poor as poor_conversion, but better than "..."
+	{ template< typename t > operator t & () {} };
+}
 
 struct abc { inline virtual ~abc() = 0; };
 abc::~abc() = default;
@@ -60,108 +71,11 @@ template< typename t >
 struct has_member_type< t, typename std::conditional< true, void, typename t::type >::type >
 	: std::true_type {};
 
-template< typename t, typename v = void >
-struct is_output_iterator
-	: std::false_type {};
-
-template< typename t >
-struct is_output_iterator< t, typename std::conditional< true, void, decltype( * std::declval< t & >() ++ ) >::type >
-	: std::true_type {};
-
-template< typename t, typename u, typename = void >
-struct cont_is_assignable : std::false_type {};
-
-template< typename t, typename u >
-struct cont_is_assignable< t, u, typename std::conditional< true, void, decltype( * std::declval< t >().cont ++ = std::declval< u >() ) >::type >
-	: std::true_type {};
-
-template< typename ftor, typename = void >
-struct output_iterator_from_functor;
-
-template< typename ftor >
-struct output_iterator_from_functor< ftor, void >
-	: ftor,
-	std::iterator< std::output_iterator_tag, void, void, void, void > {
-	typedef std::true_type overrides_ref;
-	
-	template< typename ... args >
-	explicit output_iterator_from_functor( args && ... a )
-		: ftor( std::forward< args >( a ) ... ) {}
-
-	template< typename value_type > // performs insertion, is not the move assignment operator
-	typename std::enable_if< has_member_type< std::result_of< ftor( value_type ) > >::value
-		&& cont_is_assignable< typename std::conditional< true, ftor, value_type >::type, std::exception >::value,
-		output_iterator_from_functor & >::type
-	operator = ( value_type && o ) {
-		try {
-			(*this)( std::forward< value_type >( o ) );
-		} catch ( std::exception & e ) {
-			* this->cont ++ = std::move( e );
-		}
-		return *this;
-	}
-
-	template< typename value_type > // performs insertion, is not the move assignment operator
-	typename std::enable_if< has_member_type< std::result_of< ftor( value_type ) > >::value
-		&& ! cont_is_assignable< typename std::conditional< true, ftor, value_type >::type, std::exception >::value,
-		output_iterator_from_functor & >::type
-	operator = ( value_type && o ) {
-		(*this)( std::forward< value_type >( o ) );
-		return * this;
-	}
-
-	template< typename value_type > // if object is the wrong type, try bypassing it down the chain
-	auto operator = ( value_type &&o ) ->
-	typename std::enable_if< ! has_member_type< std::result_of< ftor( value_type ) > >::value
-		&& cont_is_assignable< ftor, value_type >::value,
-		output_iterator_from_functor & >::type {
-		* this->cont ++ = std::forward< value_type >( o );
-		return * this;
-	}
-
-	template< typename value_type > // catch-all to print a message when wrong type is passed
-	auto operator = ( value_type &&o ) ->
-	typename std::enable_if< ! has_member_type< std::result_of< ftor( value_type ) > >::value
-		&& ! cont_is_assignable< ftor, value_type >::value
-		&& ! std::is_convertible< value_type, std::exception >::value,
-		output_iterator_from_functor & >::type {
-		static_assert( ! std::is_same< value_type, value_type >::value, "Illegal pass type." );
-		return * this;
-	}
-
-	friend output_iterator_from_functor &operator*( output_iterator_from_functor &o ) { return o; } // is own referent
-	friend output_iterator_from_functor &operator++( output_iterator_from_functor &o ) { return o; } // just no-ops:
-	friend output_iterator_from_functor &operator++( output_iterator_from_functor &o, int ) { return o; }
-};
-
-template< typename ftor >
-output_iterator_from_functor< ftor >
-make_output_iterator( ftor && f )
-	{ return output_iterator_from_functor< ftor >{ std::forward< ftor >( f ) }; }
-
-template< typename output_iterator >
-struct output_iterator_ref
-	: std::reference_wrapper< output_iterator >,
-	std::iterator< std::output_iterator_tag, void, void, void, void > {
-	
-	output_iterator_ref( output_iterator &in )
-		: std::reference_wrapper< output_iterator >( in ) {}
-};
-
-template< typename ftor >
-output_iterator_ref< output_iterator_from_functor< ftor > >
-ref( output_iterator_from_functor< ftor > &i )
-	{ return { i }; }
-
 template< typename t >
 struct rvalue_reference_wrapper : std::reference_wrapper< t > {
 	rvalue_reference_wrapper( t &o ) : std::reference_wrapper< t >( o ) {}
 	t &&get() const { return static_cast< t && >( std::reference_wrapper< t >::get() ); }
-#if __GNUC__ // Workaround to enable implicit user-defined conversion in bind call.
-	operator t&& () const volatile { return const_cast< rvalue_reference_wrapper const * >( this )->get(); }
-#else
 	operator t&& () const { return get(); }
-#endif
 	operator t& () const = delete;
 };
 
@@ -171,10 +85,8 @@ rvalue_reference_wrapper< t > rref( t &o ) { return { o }; }
 template< typename ... t >
 struct amalgam : t ... {
 	amalgam( t && ... in ) : t( std::move( in ) ) ... {} // not perfect forwarding
-private:
-	struct tag;
 protected:
-	void operator () ( tag ) = delete;
+	void operator () ( struct amalgam_tag ) = delete;
 };
 
 template< typename ftor >
@@ -212,11 +124,6 @@ template< typename bound >
 implicit_thunk< typename std::decay< bound >::type > make_implicit_thunk( bound &&f )
 	{ return { std::forward< bound >( f ) }; }
 
-struct poor_conversion {
-	template< typename t >
-	poor_conversion( t const & ) {}
-};
-
 template< typename output_iterator >
 class limit_range_ftor {
 	std::size_t count, max;
@@ -244,8 +151,8 @@ public:
 };
 
 template< typename output_iterator >
-output_iterator_from_functor< limit_range_ftor< output_iterator > >
-limit_range( output_iterator &&iter ) { return output_iterator_from_functor< limit_range_ftor< output_iterator > >{ std::move( iter ) }; }
+limit_range_ftor< output_iterator >
+limit_range( output_iterator &&iter ) { return limit_range_ftor< output_iterator >{ std::move( iter ) }; }
 
 class utf8_convert {
 	char32_t min;
@@ -259,6 +166,7 @@ public:
 		result = c;
 		return true;
 	}
+private:
 	bool non_ascii( std::uint8_t c ) {
 		if ( len == 0 ) {
 			if ( c >= 0xC0 ) {
@@ -284,9 +192,6 @@ public:
 };
 
 namespace query {
-	struct poor_converter // poor as poor_conversion, but less poor than "..."
-		{ template< typename t > operator t & () {} };
-	
 	void ctime_r( ... ); // If ::ctime_r is to be found by unqualified lookup, the fallback must be found by ADL.
 }
 

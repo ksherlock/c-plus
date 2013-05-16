@@ -89,7 +89,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 		auto source = token.source;
 		if ( token.type != ws ) state_after_space = ws;
 		
-		* this->cont ++ = std::move( token );
+		cplus::pass( this->cont, std::move( token ) );
 		token.s.clear();
 		token.type = state = state_after_space;
 		token.source = std::move( source );
@@ -108,7 +108,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 					"Otherwise, try a hexadecimal escape sequence \"\\xDnnn\"." );
 				else if ( state != rstring && state != string_lit && state != char_lit && state != escape ) {
 					if ( in.s == pp_char_source::ucn && char_in_set( char_set::basic_source, c ) ) {
-						throw error( token, "Please do not encode basic source text "
+						this->template pass_or_throw< error >( token, "Please do not encode basic source text "
 											"in universal-character-names (§2.3/2)." );
 					} else if ( ( c <= 0x1F && ! char_in_set( char_set::space, c ) )
 							|| ( c >= 0x7F && c <= 0x9F ) ) {
@@ -289,7 +289,6 @@ class phase3 : public stage< output_iterator, phase3_config >,
 				
 				if ( punct_lower == punct_upper ) { // no possible match
 					token.s.pop_back(); // backtrack
-					//token.s.erase( token.s.size() - 1 ); // G++ doesn't have pop_back yet
 					goto punct_done;
 				
 				} else if ( punct_lower == cplus::block_comment ) {
@@ -352,21 +351,17 @@ class phase3 : public stage< output_iterator, phase3_config >,
 		case block_comment:
 			if ( config.preserve_space ) token.s += c; // no UTF-8 decoding in comments
 			
-			if ( input_buffer_p == input_buffer ) {
-				if ( c == '*' && in.s != pp_char_source::ucn ) shift( in );
-				return;
-			} else if ( c == '/' && in.s != pp_char_source::ucn ) {
+			if ( input_buffer_p != input_buffer && c == '/' && in.s != pp_char_source::ucn ) {
 				/*	If we got here from /​* being a pseudo punctuator, looking for #, then
 					this is still the beginning of the line, and continue looking for a #. */
 				state = token.type == directive? (int) after_newline : space_run;
 				token.type = ws;
-				input_buffer_p = input_buffer;
-				return;
-			} else {
-				input_buffer_p = input_buffer;
-				return;
 			}
-		
+			input_buffer_p = input_buffer;
+			
+			if ( c == '*' && in.s != pp_char_source::ucn ) shift( in ); // advance to next sub-state
+			return;
+
 		case line_comment:
 			if ( c == '\n' && in.s != pp_char_source::ucn ) {
 				token.type = state = ws;
@@ -385,11 +380,11 @@ class phase3 : public stage< output_iterator, phase3_config >,
 				}
 				if ( char_in_set( char_set::space, c ) || c == ')' || c == '\\'
 						|| ! char_in_set( char_set::basic_source, c ) )
-					throw error( token, "Raw string termination sequence must consist of "
+					throw error( token, "Raw string delimiter sequence must consist of "
 						"alphanumeric characters and C-language punctuation except parens "
 						"and backslash (§2.14.5)." );
 				if ( token.s.size() - token.s.find( '"' ) == 18 )
-					throw error( token, "Raw string termination sequence may contain at "
+					throw error( token, "Raw string delimiter sequence may contain at "
 						"most 16 characters (§2.14.5/2)." );
 				return;
 			} else if ( c == ')' ) {

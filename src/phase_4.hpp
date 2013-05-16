@@ -26,9 +26,9 @@ inline std::string destringize( std::string in ) { // As described in §16.9. Al
 	return in;
 }
 
-inline intmax_t rudimentary_evaluate( tokens::iterator &pen, int min_precedence = 0 ) {
+inline uintmax_t rudimentary_evaluate( tokens::iterator &pen, int min_precedence = 0 ) {
 	using namespace pp_constants;
-	typedef intmax_t eval_t; // need a discriminated union of intmax_t and uintmax_t
+	typedef uintmax_t eval_t; // need a discriminated union of intmax_t and uintmax_t
 	typedef std::map< string, std::pair< std::function< eval_t( eval_t, eval_t ) >, int > > op_map;
 	static op_map binary_operators {
 	#define SIMPLE_OP( op, prec ) { # op, { []( eval_t l, eval_t r ){ return l op r; }, prec } }
@@ -127,9 +127,9 @@ class phase4
 			preserve_defined_operator = macros.insert( { pp_constants::defined_operator.s, defined_preserver } ).second;
 		}
 		
-		util::output_iterator_from_functor< macro_context< macro_filter< std::back_insert_iterator< tokens > > > >
+		macro_context< macro_filter< std::back_insert_iterator< tokens > > >
 			local( static_cast< macro_context_info & >( * this ), ret );
-		std::move( first, last, ref( local ) );
+		pass( std::make_move_iterator( first ), std::make_move_iterator( last ), local );
 		local.flush();
 		
 		if ( preserve_defined_operator ) macros.erase( pp_constants::defined_operator.s ); // #undef defined
@@ -183,21 +183,21 @@ class phase4
 			throw error( * pen, "Error directive (§16.5)." ); // Rely on driver to show actual message.
 		
 		} else if ( * pen == pp_constants::pragma_directive ) { // convert #pragma to _Pragma()
-			auto local( util::make_output_iterator( ref( * this ) ) );
+			auto local( ref( * this ) );
 			tokens intro = { pp_constants::pragma_operator, pp_constants::lparen,
 					pp_constants::stringize_macro, pp_constants::lparen },
 				arg( std::move( input ) ),
 				term = { pp_constants::rparen, pp_constants::rparen, std::move( pen[ -1 ] ) }; // end with whitespace
 			
-			std::move( intro.begin(), intro.end(), local );
+			pass( std::make_move_iterator( intro.begin() ), std::make_move_iterator( intro.end() ), local );
 			
 			auto pos_back = arg.back();
 			skip_space( ++ pen, arg.end() ); // does moving a container preserve iterators into it?
-			std::move( pen, arg.end(), local );
+			pass( std::make_move_iterator( pen ), std::make_move_iterator( arg.end() ), local );
 			if ( this->paren_depth != 1 ) // not infallible, but #pragma is implementation-defined anyway
 				throw error( pos_back, "Parens must balance in #pragma." );
 			
-			std::move( term.begin(), term.end(), local );
+			pass( std::make_move_iterator( term.begin() ), std::make_move_iterator( term.end() ), local );
 		
 		} else if ( * pen == pp_constants::else_directive || * pen == pp_constants::endif_directive
 					|| ( * pen == pp_constants::elif_directive && state != skip_if ) ) {
@@ -423,7 +423,7 @@ class phase4
 			int count;
 			do {
 				count = header.sgetn( buf, sizeof buf );
-				std::copy( buf, buf + count, util::ref( nested ) );
+				pass( buf, buf + count, nested );
 			} while ( count == sizeof buf );
 			finalize( nested ); // does not finalize *this, only phases 1-3
 			
@@ -508,7 +508,7 @@ public:
 						throw error( in, "A macro invokation cannot span a directive (§16.3/11)." );
 					
 					if ( input.empty() ) throw error( in, "ICE: Directive not preceded by newline?" );
-					std::move( input.begin(), input.end() - 1, util::ref( this->cont ) ); // flush uncalled function
+					pass( std::make_move_iterator( input.begin() ), std::make_move_iterator( input.end() - 1 ), this->cont ); // flush uncalled function
 					input.erase( input.begin(), input.end() - 1 ); // save trailing space token (guaranteed to exist)
 					state = directive;
 					return;
@@ -603,14 +603,14 @@ public:
 	
 	void operator() ( token &&in ) {
 		if ( in.type == token_type::ws ) {
-			* this->cont ++ = std::move( in );
+			pass( this->cont, std::move( in ) );
 			return;
 		}
 		switch ( state ) {
 		case normal:		if ( in == pp_constants::pragma_operator ) {
 								state = open_paren;
 								pragma_token = std::move( in );
-							} else * this->cont ++ = std::move( in );
+							} else pass( this->cont, std::move( in ) );
 							return;
 							
 		case open_paren:	state = string;
@@ -640,7 +640,7 @@ public:
 								} catch ( propagate_pragma & ) { goto propagate; }
 							} else propagate: {
 								in.type = token_type::directive;
-								* this->cont ++ = std::move( in );
+								pass( this->cont, std::move( in ) );
 								return;
 							}
 						}

@@ -85,8 +85,13 @@ int main( int argc, char *argv[] ) {
 	
 	int count = 0;
 	
-	auto && pile = cplus::autoconfigured_pile< cplus::phase1_2, cplus::phase3, cplus::phase4, cplus::pragma_filter >
-		( [&count]( cplus::token &&token ){ std::fwrite( token.s.c_str(), 1, token.s.size(), stdout ); }, nullptr );
+	auto && pile = cplus::autoconfigured_pile< cplus::phase1_2, cplus::phase3, cplus::phase4, cplus::pragma_filter > (
+		cplus::util::amalgamate(
+			[&count]( cplus::token &&token ){ std::fwrite( token.s.c_str(), 1, token.s.size(), stdout ); },
+			[]( std::exception && e ) { std::clog << e.what() << '\n'; }
+		),
+		nullptr
+	);
 			//{ std::cout << '`' << token.s << '`' << int(token.type); }
 			//{ std::cout << token.s << "·"; }
 			//{ ++ count; }
@@ -94,20 +99,21 @@ int main( int argc, char *argv[] ) {
 	try {
 		char initialization[] =
 			"#define __STDC__ 1\n"
-			"#define __cplusplus 201103L\n"
+			"#define __cplusplus 199711L //201103L\n"
 			"#define __i386__ 1\n"
 			"#define __LP64__ 1\n"
+			"#define __GNUC__ 4\n"
 			"#pragma system_path "
-				"\"/usr/local/lib/gcc/x86_64-apple-darwin10.7.0/4.7.0/include/\" "
+				"\"/usr/local/lib/gcc/x86_64-apple-darwin12.2.0/4.8.0/include/\" "
 				"\"/usr/include/\" \"/usr/include/sys/\" \"/usr/local/include/\" "
-				"\"/usr/local/include/c++/4.7.0/\" "
-				"\"/usr/local/include/c++/4.7.0/x86_64-apple-darwin10.7.0/i386/\"\n"
+				"\"/usr/local/include/c++/4.8.0/\" "
+				"\"/usr/local/include/c++/4.8.0/x86_64-apple-darwin12.2.0/i386/\"\n"
 			//"#include <iostream>\n"
 			;
 		
-		std::copy( initialization, std::end( initialization ) - 1, cplus::util::ref( pile ) );
+		cplus::pass( initialization, std::end( initialization ) - 1, pile );
 		
-		std::copy( std::istreambuf_iterator< char >{ std::cin }, std::istreambuf_iterator< char >{}, cplus::util::ref( pile ) );
+		cplus::pass( std::istreambuf_iterator< char >{ std::cin }, std::istreambuf_iterator< char >{}, pile );
 		finalize( pile );
 		
 		/*std::cerr << "fast x " << cplus::fast_dispatch << ", slow x " << cplus::slow_dispatch << '\n';
