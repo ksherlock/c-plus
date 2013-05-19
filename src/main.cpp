@@ -88,50 +88,37 @@ int main( int argc, char *argv[] ) {
 	auto && pile = cplus::autoconfigured_pile< cplus::phase1_2, cplus::phase3, cplus::phase4, cplus::pragma_filter > (
 		cplus::util::amalgamate(
 			[&count]( cplus::token &&token ){ std::fwrite( token.s.c_str(), 1, token.s.size(), stdout ); },
-			[]( std::exception && e ) { std::clog << e.what() << '\n'; }
+			[]( cplus::error && err ) {
+				std::clog << err.what() << '\n';
+				if ( ! err.p.source ) std::cerr << "but I don't know where\n";
+				point_at( err.p );
+			}
 		),
 		nullptr
 	);
-			//{ std::cout << '`' << token.s << '`' << int(token.type); }
-			//{ std::cout << token.s << "·"; }
-			//{ ++ count; }
+
+	char initialization[] =
+		"#define __STDC__ 1\n"
+		"#define __cplusplus 199711L //201103L\n"
+		"#define __i386__ 1\n"
+		"#define __LP64__ 1\n"
+		"#define __GNUC__ 4\n"
+		"#pragma system_path "
+			"\"/usr/local/lib/gcc/x86_64-apple-darwin12.2.0/4.8.0/include/\" "
+			"\"/usr/include/\" \"/usr/include/sys/\" \"/usr/local/include/\" "
+			"\"/usr/local/include/c++/4.8.0/\" "
+			"\"/usr/local/include/c++/4.8.0/x86_64-apple-darwin12.2.0/i386/\"\n"
+		//"#include <iostream>\n"
+		;
 	
-	try {
-		char initialization[] =
-			"#define __STDC__ 1\n"
-			"#define __cplusplus 199711L //201103L\n"
-			"#define __i386__ 1\n"
-			"#define __LP64__ 1\n"
-			"#define __GNUC__ 4\n"
-			"#pragma system_path "
-				"\"/usr/local/lib/gcc/x86_64-apple-darwin12.2.0/4.8.0/include/\" "
-				"\"/usr/include/\" \"/usr/include/sys/\" \"/usr/local/include/\" "
-				"\"/usr/local/include/c++/4.8.0/\" "
-				"\"/usr/local/include/c++/4.8.0/x86_64-apple-darwin12.2.0/i386/\"\n"
-			//"#include <iostream>\n"
-			;
-		
-		cplus::pass( initialization, std::end( initialization ) - 1, pile );
-		
-		cplus::pass( std::istreambuf_iterator< char >{ std::cin }, std::istreambuf_iterator< char >{}, pile );
-		finalize( pile );
-		
-		/*std::cerr << "fast x " << cplus::fast_dispatch << ", slow x " << cplus::slow_dispatch << '\n';
-		std::copy( std::begin( cplus::slow_histo ), std::end( cplus::slow_histo ), std::ostream_iterator< int >( std::cerr, ", " ) );
-		std::cerr << '\n' << "total passed " << count << '\n';
-		*/
-		//stream_handle.dump_siblings();
-		
-	} catch ( cplus::error &err ) {
-		std::cerr << err.what() << '\n';
-		if ( ! err.p.source ) std::cerr << "but I don't know where\n";
-		point_at( err.p );
-		
-		status = 1;
-	}
+	cplus::pass( initialization, std::end( initialization ) - 1, pile );
 	
-	/*std::cerr << "fast x " << cplus::fast_path << ", slow x " << cplus::slow_path << '\n';
+	cplus::pass( std::istreambuf_iterator< char >{ std::cin }, std::istreambuf_iterator< char >{}, pile );
+	finalize( pile );
+	
+	/*std::cerr << "fast x " << cplus::fast_dispatch << ", slow x " << cplus::slow_dispatch << '\n';
 	std::copy( std::begin( cplus::slow_histo ), std::end( cplus::slow_histo ), std::ostream_iterator< int >( std::cerr, ", " ) );
-	std::cerr << '\n';*/
+	std::cerr << '\n' << "total passed " << count << '\n';
+	*/
 	return status;
 }
