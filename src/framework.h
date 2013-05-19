@@ -38,27 +38,73 @@ string repool( string s, string_pool p ) { return { s.c_str(), p }; }
 
 namespace cplus {
 
+template< typename, typename = void, typename = void * > // by default, a stage does not handle exceptions
+struct parameter_exceptions
+	{ typedef std::tuple<> type; };
+
+// Specializations for composite types are more specialized, to be selected first and delegate to specializations for constituent types.
+template< typename ama > // First handle amalgamations, which are derived from util::amalgam.
+struct parameter_exceptions< ama, typename std::enable_if< ! std::is_same< ama, typename ama::amalgam >::value >::type >
+	{ typedef typename parameter_exceptions< typename ama::amalgam >::type type; };
+
+template< typename ... base > // A stage which is an amalgamation acts as the union of its bases.
+struct parameter_exceptions< util::amalgam< base ... > >
+	{ typedef typename util::tuple_cat< typename parameter_exceptions< base >::type ... >::type type; };
+
+template< typename ftor, typename unspecial > // An intermediate stage may handle some exceptions by itself, and delegate others to later stages.
+struct parameter_exceptions< ftor, typename util::mention< decltype( & ftor::cont ) >::type, unspecial * > {
+	typedef typename util::tuple_cat<
+		typename parameter_exceptions< ftor, void, void >::type, // avoid recursion and call more general specialization
+		typename parameter_exceptions< decltype( std::declval< ftor >().cont ) >::type >::type type;
+};
+
+template< typename ftor, typename unspecial > // A functor with one nonstatic operator() overload taking a derivative of std::exception handles that type.
+struct parameter_exceptions< ftor,
+	typename std::enable_if< std::is_base_of< std::exception,
+		typename std::decay< typename std::reference_wrapper< decltype( & ftor::operator() ) >::second_argument_type >::type
+	>::value >::type, unspecial >
+	{ typedef std::tuple< typename std::reference_wrapper< decltype( & ftor::operator() ) >::second_argument_type > type; };
+
+template< typename ftor, typename unspecial > // An object with a parameter_exceptions member uses it as an explicit spec. It cannot satisfy the previous specialization.
+struct parameter_exceptions< ftor, typename util::mention< typename ftor::parameter_exceptions >::type, unspecial >
+	{ typedef typename ftor::parameter_exceptions type; };
+
+// pass() puts input into a stage (functor or iterator) or its succeeding stages, catches thrown exceptions and feeds them back in.
+template< typename tag = struct tag, typename oit, typename v >
+auto pass( oit it, v && val )
+	-> typename util::mention< decltype( * it ++ = std::forward< v >( val ) ) >::type
+	{ * it ++ = std::forward< v >( val ); }
+
+template< typename tag = struct tag, typename fn, typename v >
+typename util::mention< typename std::result_of< fn( v ) >::type >::type
+pass( fn && obj, v && val );
+
+template< bool en = false > // Dummy overload, may be disabled by using pass< tag >() call.
+struct bad_pass *pass( util::poor_conversion, util::poor_conversion ) { static_assert( en, "invalid pass argument" ); return nullptr; }
+
+template< typename tag = struct tag, typename fn, typename v > // Qualified-id avoids ADL and prevents recursion, tag enables ADL and recursion.
+typename std::enable_if< std::is_same< bad_pass *, decltype( cplus::pass( std::declval< fn >(), std::declval< v >() ) ) >::value,
+	 typename util::mention< decltype( pass< tag >( std::declval< fn >().cont, std::declval< v >() ) ) >::type >::type
+pass( fn && obj, v && val )
+	{ pass( obj.cont, std::forward< v >( val ) ); }
+
 template< typename fn, typename v >
-typename std::enable_if< util::has_member_type< std::result_of< fn( v ) > >::value
-					&& util::has_member_type< std::result_of< fn( std::exception & ) > >::value >::type
-pass( fn && obj, v && val ) {
+void pass( fn && obj, v && val, util::mention< std::tuple<> > )
+	{ obj( std::forward< v >( val ) ); }
+
+template< typename e, typename ... er, typename fn, typename v >
+void pass( fn && obj, v && val, util::mention< std::tuple< e, er ... > > ) {
 	try {
-		obj( std::forward< v >( val ) );
-	} catch ( std::exception & e ) {
-		pass( std::forward< fn >( obj ), e );
+		pass( std::forward< fn >( obj ), std::forward< v >( val ), util::mention< std::tuple< er ... > >() );
+	} catch ( e & exc ) {
+		pass( std::forward< fn >( obj ), std::forward< e >( exc ) ); // May move e. Double exceptions may cause infinite recursion.
 	}
 }
 
-template< typename fn, typename v >
-typename std::enable_if< util::has_member_type< std::result_of< fn( v ) > >::value
-					&& ! util::has_member_type< std::result_of< fn( std::exception & ) > >::value >::type
+template< typename, typename fn, typename v >
+typename util::mention< typename std::result_of< fn( v ) >::type >::type
 pass( fn && obj, v && val )
-	{ obj( std::forward< v >( val ) ); }
-
-template< typename oit, typename v >
-auto pass( oit it, v && val )
-	-> typename std::conditional< false, decltype( * it ++ = std::forward< v >( val ) ), void >::type
-	{ * it ++ = std::forward< v >( val ); }
+	{ pass( std::forward< fn >( obj ), std::forward< v >( val ), util::mention< typename parameter_exceptions< typename std::decay< fn >::type >::type >() ); }
 
 template< typename obj, typename iit >
 void pass( iit first, iit last, obj && o ) {
@@ -67,16 +113,14 @@ void pass( iit first, iit last, obj && o ) {
 	}
 }
 
-namespace util { namespace query {
-poor_converter pass( poor_conversion, poor_conversion ); // accessible to impl:: but not to cplus::
+template< typename exception_type, typename output_iterator, typename ... args >
+auto pass_or_throw( output_iterator & o, args && ... a )
+	-> typename util::mention< decltype( pass< tag >( std::declval< output_iterator >(), std::declval< exception_type >() ) ) >::type
+	{ pass( std::forward< output_iterator >( o ), exception_type{ std::forward< args >( a ) ... } ); }
 
-namespace impl {
-template< typename fn, typename v >
-typename std::enable_if< std::is_same< poor_converter, decltype( pass( std::declval< fn >(), std::declval< v >() ) ) >::value >::type
-pass( fn && obj, v && val ) // not visible to self because not impl is not associated with argument type
-	{ pass( obj.cont, std::forward< v >( val ) ); }
-}}}
-using namespace util::query::impl;
+template< typename exception_type, typename ... args >
+void pass_or_throw( util::poor_conversion, args && ... a )
+	{ throw exception_type{ std::forward< args >( a ) ... }; }
 
 struct stage_base {};
 
@@ -91,15 +135,6 @@ struct derived_stage : base_type {
 protected:
 	using base::base;
 };
-
-template< typename exception_type, typename output_iterator, typename ... args >
-auto pass_or_throw( output_iterator & o, args && ... a )
-	-> typename std::conditional< true, void, decltype( * o ++ = std::declval< exception_type >() ) >::type
-	{ * o ++ = exception_type{ std::forward< args >( a ) ... }; }
-
-template< typename exception_type, typename ... args >
-void pass_or_throw( util::poor_conversion, args && ... a )
-	{ throw exception_type{ std::forward< args >( a ) ... }; }
 
 // Non-virtual abstract base class.
 template< typename output_iterator, typename ... config_types >
@@ -225,7 +260,7 @@ struct config_traits
 	{ typedef std::tuple<> used_configs; };
 
 template< typename ftor >
-struct config_traits< ftor, typename std::conditional< true, void, typename ftor::used_configs >::type >
+struct config_traits< ftor, typename util::mention< typename ftor::used_configs >::type >
 	{ typedef typename ftor::used_configs used_configs; };
 
 template< typename ftor, typename used_configs = typename config_traits< ftor >::used_configs >

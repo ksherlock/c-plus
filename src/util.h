@@ -26,6 +26,10 @@ namespace cplus {
 
 namespace util {
 
+template< typename ... >
+struct mention
+	{ typedef void type; };
+
 struct poor_conversion {
 	template< typename t >
 	poor_conversion( t const & ) {}
@@ -64,12 +68,9 @@ template< typename ... tail, typename elem, std::size_t offset >
 struct tuple_index< std::tuple< elem, tail ... >, elem, offset >
 	: std::integral_constant< std::size_t, offset > {};
 
-template< typename t, typename = void >
-struct has_member_type : std::false_type {};
-
-template< typename t >
-struct has_member_type< t, typename std::conditional< true, void, typename t::type >::type >
-	: std::true_type {};
+template< typename ... t >
+struct tuple_cat
+	{ typedef decltype( std::tuple_cat( std::declval< t >() ... ) ) type; };
 
 template< typename t >
 struct rvalue_reference_wrapper : std::reference_wrapper< t > {
@@ -87,6 +88,7 @@ struct amalgam : t ... {
 	amalgam( t && ... in ) : t( std::move( in ) ) ... {} // not perfect forwarding
 protected:
 	void operator () ( struct amalgam_tag ) = delete;
+	void operator () ( struct amalgam_tag * ) = delete; // GCC workaround: invalidate expression &fn::operator()
 };
 
 template< typename ftor >
@@ -143,7 +145,7 @@ public:
 	
 	template< typename value_type >
 	auto operator() ( value_type &&o ) ->
-	typename std::conditional< true, void, decltype( * base ++ = std::forward< value_type >( o ) ) >::type {
+	typename mention< decltype( * base ++ = std::forward< value_type >( o ) ) >::type {
 		if ( max != 0 && count == max ) throw std::range_error( "sequence too long" );
 		++ count;
 		* base ++ = std::forward< value_type >( o );
