@@ -496,7 +496,7 @@ public:
 		input_buffer_p( input_buffer ) {}
 	
 	void operator()( pp_char const &in ) {
-		if ( char_in_set( * char_set::safe_chars[ state ], in.c ) ) {
+		if ( in.s == pp_char_source::normal && char_in_set( * char_set::safe_chars[ state ], in.c ) ) {
 			//++ fast_dispatch;
 			input_buffer_p = input_buffer;
 			if ( state < space_run || config.preserve_space ) {
