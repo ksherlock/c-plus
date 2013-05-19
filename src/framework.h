@@ -148,6 +148,12 @@ protected:
 	stage( stage && ) = delete;
 	stage( stage const & ) = delete;
 	
+	template< typename v >
+	void pass( v && val ) { cplus::pass( cont, std::forward< v >( val ) ); }
+	
+	template< typename iit >
+	void pass( iit first, iit last ) { cplus::pass( first, last, cont ); }
+	
 	template< typename exception_type, typename ... args >
 	void pass_or_throw( args && ... a )
 		{ cplus::pass_or_throw< exception_type >( cont, std::forward< args >( a ) ... ); }

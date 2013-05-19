@@ -49,7 +49,7 @@ public:
 			throw error( input[ input.front().type == token_type::ws ], "Unterminated macro invokation." );
 		}
 		if ( input.size() > 3 ) throw error( input.back(), "ICE: too much input at flush." );
-		pass( std::make_move_iterator( input.begin() ), std::make_move_iterator( input.end() ), this->cont );
+		this->pass( std::make_move_iterator( input.begin() ), std::make_move_iterator( input.end() ) );
 		input.clear();
 		definition = nullptr;
 	}
@@ -84,14 +84,14 @@ public:
 				if ( in.type == token_type::id && ( def = common.macros.find( in.s ) ) != common.macros.end() ) {
 					if ( definition ) { // Flush uncalled function-like macro. Save trailing space.
 						tokens::iterator flush_end = input.end() - ( input.back().type == token_type::ws );
-						pass( std::make_move_iterator( input.begin() ), std::make_move_iterator( flush_end ), this->cont );
+						this->pass( std::make_move_iterator( input.begin() ), std::make_move_iterator( flush_end ) );
 						input.erase( input.begin(), flush_end );
 					}
 					definition = &* def;
 					input.push_back( std::move( in ) ); // Remember name in case macro isn't called.
 				} else {
 					flush( std::move( callers ) ); // Clear any uncalled function, or just flush whitespace. No object macro here.
-					pass( this->cont, std::move( in ) ); // Common case: not in any part of an invokation, pass through.
+					this->pass( std::move( in ) ); // Common case: not in any part of an invokation, pass through.
 				}
 			}
 		} else {
@@ -494,7 +494,7 @@ public:
 		: macro_filter::stage( std::forward< args >( a ) ... ) {}
 	
 	void operator() ( token &&in )
-		{ if ( ! in.s.empty() ) pass( this->cont, std::move( in ) ); } // Filter out placemarkers and recursion stops.
+		{ if ( ! in.s.empty() ) this->pass( std::move( in ) ); } // Filter out placemarkers and recursion stops.
 };
 
 template< typename output_iterator >

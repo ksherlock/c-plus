@@ -508,7 +508,7 @@ public:
 						throw error( in, "A macro invokation cannot span a directive (§16.3/11)." );
 					
 					if ( input.empty() ) throw error( in, "ICE: Directive not preceded by newline?" );
-					pass( std::make_move_iterator( input.begin() ), std::make_move_iterator( input.end() - 1 ), this->cont ); // flush uncalled function
+					this->pass( std::make_move_iterator( input.begin() ), std::make_move_iterator( input.end() - 1 ) ); // flush uncalled function
 					input.erase( input.begin(), input.end() - 1 ); // save trailing space token (guaranteed to exist)
 					state = directive;
 					return;
@@ -603,14 +603,14 @@ public:
 	
 	void operator() ( token &&in ) {
 		if ( in.type == token_type::ws ) {
-			pass( this->cont, std::move( in ) );
+			this->pass( std::move( in ) );
 			return;
 		}
 		switch ( state ) {
 		case normal:		if ( in == pp_constants::pragma_operator ) {
 								state = open_paren;
 								pragma_token = std::move( in );
-							} else pass( this->cont, std::move( in ) );
+							} else this->pass( std::move( in ) );
 							return;
 							
 		case open_paren:	state = string;
@@ -640,7 +640,7 @@ public:
 								} catch ( propagate_pragma & ) { goto propagate; }
 							} else propagate: {
 								in.type = token_type::directive;
-								pass( this->cont, std::move( in ) );
+								this->pass( std::move( in ) );
 								return;
 							}
 						}

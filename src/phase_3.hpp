@@ -89,7 +89,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 		auto source = token.source;
 		if ( token.type != ws ) state_after_space = ws;
 		
-		cplus::pass( this->cont, std::move( token ) );
+		phase3::stage::pass( std::move( token ) );
 		token.s.clear();
 		token.type = state = state_after_space;
 		token.source = std::move( source );

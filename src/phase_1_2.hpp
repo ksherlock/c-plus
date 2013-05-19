@@ -37,7 +37,7 @@ class phase1_2 : public stage< output_iterator, phase1_2_config >,
 		inhibit_ucn = false;
 		for ( pp_char *p = shift_buffer; p != shift_p; ++ p ) {
 			try {
-				cplus::pass( this->cont, * p );
+				phase1_2::stage::pass( * p );
 			} catch ( inhibit_ucn_notification &n ) { // follows backslash, which is always shifted
 				if ( p == shift_p - 1 ) inhibit_ucn = true;
 			}
@@ -47,7 +47,7 @@ class phase1_2 : public stage< output_iterator, phase1_2_config >,
 	
 	void pass( std::uint8_t c ) try {
 		inhibit_ucn = false;
-		cplus::pass( this->cont, pp_char{ c, file_pos, static_cast< pp_char_source >( state ) } );
+		phase1_2::stage::pass( pp_char{ c, file_pos, static_cast< pp_char_source >( state ) } );
 	} catch ( raw_string_notification &n ) { // follows quote, which is never shifted
 		state = n.entering? (int) rstring : normal;
 	}
@@ -99,7 +99,7 @@ public:
 				shift_buffer->s = trigraph;
 				return;
 			} else if ( c == '?' ) { // may be a trigraph preceded by a "?"
-				cplus::pass( this->cont, * shift_buffer ); // unshift only that "?"
+				phase1_2::stage::pass( * shift_buffer ); // unshift only that "?"
 				shift_p = std::move( shift_buffer + 1, shift_p, shift_buffer );
 				shift( c ); // shift current "?"
 				return; // remain in same state
