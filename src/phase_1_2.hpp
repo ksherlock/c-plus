@@ -151,7 +151,7 @@ public:
 				for ( int shift = 31; ucn_acc >> shift == 0; shift -= 5 ) -- unicode_remaining;
 				
 				pass( std::uint8_t( 0x7F80 >> unicode_remaining
-								| uint64_t( ucn_acc ) >> unicode_remaining * 6 ) );
+								| std::uint64_t( ucn_acc ) >> unicode_remaining * 6 ) );
 				while ( unicode_remaining -- ) {
 					pass( std::uint8_t( 0x80 | ( ( ucn_acc >> unicode_remaining * 6 ) & 0x3F ) ) );
 				}

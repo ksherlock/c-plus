@@ -22,9 +22,7 @@ struct TYPENAME ## _import_base \
 	{ enum TYPENAME { __VA_ARGS__, TYPENAME ## _last }; }; \
 typedef TYPENAME ## _import_base :: TYPENAME TYPENAME;
 
-namespace cplus {
-
-namespace util {
+namespace cplus { namespace util {
 
 template< typename ... >
 struct mention
@@ -34,11 +32,6 @@ struct poor_conversion {
 	template< typename t >
 	poor_conversion( t const & ) {}
 };
-
-namespace query {
-struct poor_converter // poor as poor_conversion, but better than "..."
-	{ template< typename t > operator t & () {} };
-}
 
 struct abc { inline virtual ~abc() = 0; };
 abc::~abc() = default;
@@ -194,7 +187,10 @@ private:
 };
 
 namespace query {
-	void ctime_r( ... ); // If ::ctime_r is to be found by unqualified lookup, the fallback must be found by ADL.
+void ctime_r( ... ); // If ::ctime_r is to be found by unqualified lookup, the fallback must be found by ADL.
+
+struct poor_converter // poor as poor_conversion, but better than "..."
+	{ template< typename t > operator t & () {} };
 }
 
 template< bool en = std::is_same< char *, decltype( ctime_r( query::poor_converter(), query::poor_converter() ) ) >::value >
