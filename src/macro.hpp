@@ -415,7 +415,7 @@ macro_context_info::name_map::value_type normalize_macro_definition( tokens &&in
 	tokens::iterator pen = input.begin() + 1; // skip leading space in input buffer
 	skip_space( pen, input.end() ); // skip directive "define"
 	
-	if ( skip_space( ++ pen, input.end() ) == input.end() || pen->type != token_type::id ) {
+	if ( skip_space( ++ pen, input.end() ) == input.end() || pen->type != token_type::id || * pen == variadic ) {
 		if ( pen == input.end() ) -- pen;
 		throw error( * pen, "Expected macro definition." );
 	}
