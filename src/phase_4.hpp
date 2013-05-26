@@ -93,13 +93,11 @@ inline uintmax_t rudimentary_evaluate( tokens::iterator &pen, int min_precedence
 
 template< typename output_iterator >
 class phase4
-	: public derived_stage< substitution_phase< output_iterator >, phase3_config, phase4_config > {
+	: public derived_stage< substitution_phase< output_iterator >, phase4_config, phase3_config > {
 	typedef typename phase4::derived_stage derived_stage;
 	
 	using derived_stage::input; // share state with macro context subobject
 	using derived_stage::macros; // and macro substitution driver subobject
-	
-	phase4_config const &config;
 	
 	enum { entering, normal, directive, skip_if, skip_else } state;
 	
@@ -161,7 +159,7 @@ class phase4
 			// null directive
 			
 		} else if ( * pen == pp_constants::define_directive ) {
-			auto macro = normalize_macro_definition( std::move( input ), config.macro_pool );
+			auto macro = normalize_macro_definition( std::move( input ), this->get_config().macro_pool );
 			auto definition = macros.insert( macro );
 			if ( definition.second == false && * definition.first != macro )
 				throw error( macro.second.front(), "Macro definition does not match previous definition." );
@@ -230,7 +228,7 @@ class phase4
 			
 			if ( guard_detect.valid && guard_detect.depth == conditional_depth ) {
 				if ( guard_detect.guard == pp_constants::guard_default ) {
-					for ( auto &t : input ) t = t.reallocate( config.macro_pool );
+					for ( auto &t : input ) t = t.reallocate( this->get_config().macro_pool );
 					guard_detect.guard = input;
 				} else {
 					guard_detect.valid = false;
@@ -375,7 +373,7 @@ class phase4
 			}
 		}
 		if ( ! header.is_open() ) {
-			std::vector< string > const *path_sets[] = { & config.user_paths, & config.system_paths };
+			std::vector< string > const *path_sets[] = { & this->get_config().user_paths, & this->get_config().system_paths };
 			for ( auto path_set = use_user_paths? & path_sets[0] : & path_sets[1];
 				path_set != std::end( path_sets ); ++ path_set ) {
 				for ( std::string path : ** path_set ) {
@@ -389,8 +387,8 @@ class phase4
 			throw error( * pen, "File not found." );
 		}
 	opened:
-		token name_r = pen->reallocate( config.macro_pool ),
-			name_s{ token_type::header_name, string{ "\"", config.macro_pool }, pen->source, pen->location };
+		token name_r = pen->reallocate( this->get_config().macro_pool ),
+			name_s{ token_type::header_name, string{ "\"", this->get_config().macro_pool }, pen->source, pen->location };
 		for ( char c : name ) {
 			if ( c == '\\' || c == '"' ) name_s.s += '\\';
 			name_s.s += c;
@@ -401,10 +399,7 @@ class phase4
 			&& skip_space( ++ pen, input.end() ) != input.end() ) throw error( input.back(), "Extra tokens after header name." );
 		input.resize( 1 );
 		
-		configured_stage_from_functor< phase1_2<
-			configured_stage_from_functor< phase3<
-			configured_stage_from_functor< std::reference_wrapper< phase4 > >
-			> > > > nested( std::make_shared< inclusion >( name_s.s, name_r ), * this );
+		phase1_2< phase3< std::reference_wrapper< phase4 > > > nested( std::make_shared< inclusion >( name_s.s, name_r ), * this );
 		
 		auto context_backup = this->presumed;
 		this->presumed = macro_context_info::presumptions();
@@ -441,14 +436,14 @@ class phase4
 		{ guarded_headers.insert( { guard_detect.name, std::move( guard_detect.guard ) } ); }
 	
 public:
-	template< typename in_config3_type, typename in_config4_type, typename ... args >
-	phase4( in_config3_type &&c3, in_config4_type &&c, args && ... a )
-		: derived_stage( c3, macro_context_info::name_map{
+	template< typename ... args >
+	phase4( args && ... a )
+		: derived_stage( macro_context_info::name_map{
 			{ pp_constants::stringize_macro.s, tokens{ pp_constants::variadic, pp_constants::rparen,
 										pp_constants::stringize, pp_constants::variadic } },
 			{ pp_constants::file_macro.s, tokens{ pp_constants::space } },
 			{ pp_constants::line_macro.s, tokens{ pp_constants::space } } },
-			std::forward< args >( a ) ... ), config( c ),
+			std::forward< args >( a ) ... ),
 		state( normal ), skip_depth( 0 ), conditional_depth( 0 ), guard_detect{ false } {
 		
 		char time_str_buf[ 26 ], *time_cstr = time_str_buf;
@@ -579,16 +574,16 @@ public:
 
 template< typename output_iterator > // Replaces pragma operator "calls" with destringized directive tokens.
 class pragma_filter
-	: public derived_stage< config_manager< output_iterator >, phase3_config > {
+	: public derived_stage< config_manager< output_iterator > > {
 	config_pragma_base::pragma_map pragmas; // must be initialized before config3 - will be tough to handle in framework
-	phase3_config const &config3;
 	
 	token pragma_token; // only for reporting non-termination error
 public:
 	enum { normal, open_paren, string, close_paren } state;
 	
-	template< typename config_type >
-	config_type &get_config() {
+	template< typename config_ret_type >
+	config_ret_type &get_config() {
+		typedef typename std::remove_const< config_ret_type >::type config_type;
 		bool inserting = pragma_filter::base::registry.count( typeid( config_type ) ) == 0;
 		config_type &ret = pragma_filter::base::template get_config< config_type >();
 		if ( inserting ) {
@@ -597,9 +592,9 @@ public:
 		return ret;
 	}
 	
-	template< typename config3_type, typename ... args >
-	pragma_filter( config3_type &&c3, args && ... a )
-		: pragma_filter::derived_stage( std::forward< args >( a ) ... ), config3( c3 ), state( normal ) {}
+	template< typename ... args >
+	pragma_filter( args && ... a )
+		: pragma_filter::derived_stage( std::forward< args >( a ) ... ), state( normal ) {}
 	
 	void operator() ( token &&in ) {
 		if ( in.type == token_type::ws ) {
@@ -623,7 +618,7 @@ public:
 								throw error( in, "_Pragma operand must be a string (§16.9)." );
 							
 							tokens args;
-							phase3< std::back_insert_iterator< tokens >, std::false_type > tokenize( config3, in.source, args );
+							phase3< std::back_insert_iterator< tokens >, std::false_type > tokenize( in.source, get_config< phase3_config >(), args );
 							in.s = destringize( std::move( in.s ) ).c_str();
 							for ( std::uint8_t c : in.s ) tokenize( { c, in.location } );
 							finalize( tokenize );

@@ -49,17 +49,23 @@ void *align( std::size_t alignment, std::size_t size, void *&ptr, std::size_t &s
 	return ptr = reinterpret_cast< void * >( aligned );
 }
 
-template< typename tup, typename elem, std::size_t offset = 0 >
+template< typename elem, typename tup, std::size_t offset = 0 >
 struct tuple_index
 	: std::integral_constant< std::size_t, offset > {};
 
-template< typename head, typename ... tail, typename elem, std::size_t offset >
-struct tuple_index< std::tuple< head, tail ... >, elem, offset >
-	: std::integral_constant< std::size_t, tuple_index< std::tuple< tail ... >, elem, offset + 1 >::value > {};
+template< typename elem, typename head, typename ... tail, std::size_t offset >
+struct tuple_index< elem, std::tuple< head, tail ... >, offset >
+	: std::integral_constant< std::size_t, tuple_index< elem, std::tuple< tail ... >, offset + 1 >::value > {};
 
-template< typename ... tail, typename elem, std::size_t offset >
-struct tuple_index< std::tuple< elem, tail ... >, elem, offset >
+template< typename elem, typename ... tail, std::size_t offset >
+struct tuple_index< elem, std::tuple< elem, tail ... >, offset >
 	: std::integral_constant< std::size_t, offset > {};
+
+template< std::size_t i, typename t, typename = void >
+struct tuple_element : std::tuple_element< i, t > {};
+
+template< std::size_t i, typename t >
+struct tuple_element< i, t, typename std::enable_if< i == std::tuple_size< t >::value >::type > {};
 
 template< typename ... t >
 struct tuple_cat

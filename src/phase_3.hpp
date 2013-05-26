@@ -56,8 +56,6 @@ template< typename output_iterator, typename phase1_integration = std::true_type
 class phase3 : public stage< output_iterator, phase3_config >,
 	token_type_import_base {
 	
-	phase3_config const &config;
-	
 	enum states {
 		escape = token_type_last, exponent, ud_suffix, rstring, space_run, after_newline, line_comment, block_comment
 	};
@@ -124,13 +122,13 @@ class phase3 : public stage< output_iterator, phase3_config >,
 		case ws: // every other state returns here after pass(), even if a space character hasn't been seen
 		case space_run:
 			if ( c == '\n' || c == '\r' ) { // quietly allow CR on the assumption it precedes LF.
-				if ( config.preserve_space && ! token.s.empty() ) {
+				if ( this->get_config().preserve_space && ! token.s.empty() ) {
 					//std::cerr << "pass space " << token.s << "•\n";
 					pass();
 				}
 				token.location = in.p;
 				token.s = pp_constants::newline.s;
-				if ( config.preserve_space ) token = token.reallocate( config.stream_pool ); // re-open to append
+				if ( this->get_config().preserve_space ) token = token.reallocate( this->get_config().stream_pool ); // re-open to append
 				in_directive = false;
 				state = after_newline;
 				state_after_space = ws; // cancel looking for directive or header name
@@ -142,8 +140,8 @@ class phase3 : public stage< output_iterator, phase3_config >,
 					token.location = in.p;
 					state = space_run;
 				}
-				if ( config.preserve_space ) {
-					assert ( token.s.get_allocator() == config.stream_pool );
+				if ( this->get_config().preserve_space ) {
+					assert ( token.s.get_allocator() == this->get_config().stream_pool );
 					unshift( in );
 				} else if ( token.s.empty() ) {
 					token.s = pp_constants::space.s;
@@ -239,7 +237,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 						|| ( token.type == char_lit && token.s.back() != '\'' ) ) { // an alternative token cannot be a ud-suffix
 						std::string suffix( token.s );
 						suffix.erase( 0, suffix.rfind( token.type == string_lit? '"' : '\'' ) + 1 );
-						string suffix_s( suffix.c_str(), config.stream_pool ); // preempts token for writability
+						string suffix_s( suffix.c_str(), this->get_config().stream_pool ); // preempts token for writability
 						string const *id_punct = std::lower_bound( id_punctuators, std::end( id_punctuators ), suffix_s );
 						if ( id_punct != std::end( id_punctuators ) && suffix_s == * id_punct
 								&& id_punct != include_directive ) {
@@ -293,7 +291,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 				
 				} else if ( punct_lower == cplus::block_comment ) {
 					state = block_comment;
-					if ( ! config.preserve_space ) token.s = pp_constants::space.s;
+					if ( ! this->get_config().preserve_space ) token.s = pp_constants::space.s;
 					input_buffer_p = input_buffer;
 					return;
 				
@@ -349,7 +347,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 			}
 		
 		case block_comment:
-			if ( config.preserve_space ) token.s += c; // no UTF-8 decoding in comments
+			if ( this->get_config().preserve_space ) token.s += c; // no UTF-8 decoding in comments
 			
 			if ( input_buffer_p != input_buffer && c == '/' && in.s != pp_char_source::ucn ) {
 				/*	If we got here from /​* being a pseudo punctuator, looking for #, then
@@ -367,7 +365,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 				token.type = state = ws;
 				continue;
 			} else {
-				if ( config.preserve_space ) token.s += c;
+				if ( this->get_config().preserve_space ) token.s += c;
 				return;
 			}
 		
@@ -488,18 +486,18 @@ class phase3 : public stage< output_iterator, phase3_config >,
 	}
 	
 public:
-	template< typename in_config_type, typename ... args >
-	phase3( in_config_type &&c, instantiation::pointer in_source, args && ... a )
-		: phase3::stage( std::forward< args >( a ) ... ), config( c ),
+	template< typename ... args >
+	phase3( instantiation::pointer in_source, args && ... a )
+		: phase3::stage( std::forward< args >( a ) ... ),
 		state( after_newline ), state_after_space( ws ), in_directive( false ),
-		token( cplus::token{ ws, string{ "\n", config.stream_pool }, in_source, 1 /* kludge for line number */ } ),
+		token( cplus::token{ ws, string{ "\n", this->get_config().stream_pool }, in_source, 1 /* kludge for line number */ } ),
 		input_buffer_p( input_buffer ) {}
 	
 	void operator()( pp_char const &in ) {
 		if ( in.s == pp_char_source::normal && char_in_set( * char_set::safe_chars[ state ], in.c ) ) {
 			//++ fast_dispatch;
 			input_buffer_p = input_buffer;
-			if ( state < space_run || config.preserve_space ) {
+			if ( state < space_run || this->get_config().preserve_space ) {
 				unshift( in );
 			}
 		} else {

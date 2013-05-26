@@ -122,47 +122,93 @@ template< typename exception_type, typename ... args >
 void pass_or_throw( util::poor_conversion, args && ... a )
 	{ throw exception_type{ std::forward< args >( a ) ... }; }
 
-struct stage_base {};
-
 // Adaptor for deriving one stage from another and using base's output iterator.
 template< typename base_type, typename ... config_types >
-struct derived_stage : base_type {
+class derived_stage : public base_type {
+	std::tuple< config_types const & ... > configs;
+	struct tag {};
+public:
 	typedef base_type base;
-	typedef std::tuple< config_types ... > used_configs; // not to be instantiated, just a pack container
+	typedef derived_stage stage;
 
 	void flush() {}
 	
 protected:
-	using base::base;
+	template< typename ... args >
+	derived_stage( args && ... a ) : derived_stage( tag(), std::tuple<>(), std::forward< args >( a ) ... ) {}
+	
+	template< typename ... acc_config, typename in_config, typename ... args >
+	derived_stage( typename std::enable_if< sizeof ... ( acc_config ) != sizeof ... ( config_types )
+			&& std::is_convertible< in_config, typename util::tuple_element< sizeof ... ( acc_config ), decltype( configs ) >::type >::value, tag >::type,
+		std::tuple< acc_config ... > && cacc, in_config && c, args && ... a )
+		: derived_stage( tag(), std::tuple_cat( std::move( cacc ), std::forward_as_tuple( std::forward< in_config >( c ) ) ), std::forward< args >( a ) ... ) {}
+	
+	template< typename ... acc_config, typename in_config, typename ... args >
+	derived_stage( typename std::enable_if< sizeof ... ( acc_config ) != sizeof ... ( config_types )
+			&& ! std::is_convertible< in_config, typename util::tuple_element< sizeof ... ( acc_config ), decltype( configs ) >::type >::value, tag >::type,
+		std::tuple< acc_config ... > && cacc, in_config && c, args && ... a )
+		: derived_stage( tag(), std::tuple_cat( std::move( cacc ), std::make_tuple( util::make_implicit_thunk(
+			std::bind( & base::template get_config< typename std::tuple_element< sizeof ... ( acc_config ), std::tuple< config_types ... > >::type const >, this ) ) ) ),
+			std::forward< in_config >( c ), std::forward< args >( a ) ... ) {}
+
+	template< typename ... acc_config, typename ... args >
+	derived_stage( typename std::enable_if< sizeof ... ( acc_config ) == sizeof ... ( config_types ), tag >::type,
+		std::tuple< acc_config ... > && cacc, args && ... a )
+		: base( std::forward< args >( a ) ... ), configs( std::move( cacc ) ) {}
+	
+public:
+	template< typename client = typename std::tuple_element< 0, typename std::conditional< sizeof ... ( config_types ), std::tuple< config_types const ... >, std::tuple< void > >::type >::type >
+	typename std::enable_if< std::is_const< client >::value && util::tuple_index< client &, decltype( configs ) >::value != std::tuple_size< decltype( configs ) >::value, client & >::type
+	get_config() { return std::get< util::tuple_index< client &, decltype( configs ) >::value >( configs ); }
+	
+	template< typename client >
+	typename std::enable_if< ( typename util::mention< decltype( std::declval< base >().template get_config< client >() ) >::type(),
+		! std::is_const< client >::value || util::tuple_index< client &, decltype( configs ) >::value == std::tuple_size< decltype( configs ) >::value ), client & >::type
+	get_config() { return base::template get_config< client >(); }
+
+	template< typename v >
+	void pass( v && val ) { cplus::pass( * this, std::forward< v >( val ) ); }
+
+	template< typename iit >
+	void pass( iit first, iit last ) { cplus::pass( first, last, * this ); }
+
+	template< typename exception_type, typename ... args >
+	void pass_or_throw( args && ... a )
+		{ cplus::pass_or_throw< exception_type >( * this, std::forward< args >( a ) ... ); }
 };
 
 // Non-virtual abstract base class.
-template< typename output_iterator, typename ... config_types >
-struct stage : derived_stage< stage_base, config_types ... > {
-	output_iterator cont;
+template< typename output >
+struct stage_base {
+	output cont;
 	
-protected:
 	template< typename ... args >
-	stage( args && ... a )
-		: cont( std::forward< args >( a ) ... ) {}
-	stage( stage && ) = delete;
-	stage( stage const & ) = delete;
-	
-	template< typename v >
-	void pass( v && val ) { cplus::pass( cont, std::forward< v >( val ) ); }
-	
-	template< typename iit >
-	void pass( iit first, iit last ) { cplus::pass( first, last, cont ); }
-	
-	template< typename exception_type, typename ... args >
-	void pass_or_throw( args && ... a )
-		{ cplus::pass_or_throw< exception_type >( cont, std::forward< args >( a ) ... ); }
+	stage_base( args && ... a ) : cont( std::forward< args >( a ) ... ) {}
+
+	template< typename client >
+	typename std::enable_if< ( typename util::mention< decltype( cont.template get_config< client >() ) >::type(), true ), client & >::type
+	get_config() { return cont.template get_config< client >(); }
 };
+
+template< typename output >
+struct stage_base< std::reference_wrapper< output > > {
+	std::reference_wrapper< output > cont;
+	
+	template< typename ... args >
+	stage_base( args && ... a ) : cont( std::forward< args >( a ) ... ) {}
+
+	template< typename client >
+	typename std::enable_if< ( typename util::mention< decltype( cont.get().template get_config< client >() ) >::type(), true ), client & >::type
+	get_config() { return cont.get().template get_config< client >(); }
+};
+
+template< typename output_iterator, typename ... config_types >
+using stage = derived_stage< stage_base< output_iterator >, config_types ... >;
 
 void finalize( util::poor_conversion const & ) {} // fallback overload, worse than derived-to-base conversion
 
 template< typename s >
-typename std::enable_if< ! std::is_same< typename s::base, stage_base >::value >::type
+typename std::enable_if< ! std::is_same< typename s::base, typename s::stage_base >::value >::type
 finalize( s &o ) {
 	o.flush();
 	finalize( static_cast< typename s::base & >( o ) );
@@ -171,7 +217,7 @@ finalize( s &o ) {
 /*	Each pipeline step chains to finalize for the next one. When an iterator without
 	finalize is reached, synchronization stops. That iterator should be the last. */
 template< typename s >
-typename std::enable_if< std::is_same< typename s::base, stage_base >::value >::type
+typename std::enable_if< std::is_same< typename s::base, typename s::stage_base >::value >::type
 finalize( s &o ) {
 	o.flush();
 	finalize( o.cont );
@@ -213,28 +259,6 @@ struct error : std::runtime_error {
 		: std::runtime_error( what ), p( pos ) {}
 };
 
-template< typename output_iterator, typename functor_type >
-struct terminal_stage : functor_type, stage< output_iterator > {
-	template< typename in_functor_type, typename ... args >
-	terminal_stage( in_functor_type && in_fn, args && ... a )
-		: functor_type( std::forward< in_functor_type >( in_fn ) ), terminal_stage::stage( std::forward< args >( a ) ... ) {}
-	
-	terminal_stage( terminal_stage && o )
-		: functor_type( std::move( o ) ), terminal_stage::stage( std::move( o.cont ) ) {}
-};
-
-template< typename output_iterator, typename functor_type >
-terminal_stage< output_iterator, functor_type >
-make_terminal_stage( functor_type && in_fn, output_iterator && in_cont )
-	{ return { std::move( in_fn ), std::move( in_cont ) }; }
-
-#if 0 // use if needed
-template< typename output_iterator, typename functor_type, typename ... args >
-terminal_stage< output_iterator, functor_type >
-make_terminal_stage( functor_type && in_fn, args && ... a )
-	{ return { std::move( in_fn ), std::forward< args >( a ) ... }; }
-#endif
-
 // Stage parameterization and pragma distribution.
 struct config_base : util::abc {
 	config_base() = default;
@@ -261,54 +285,6 @@ public:
 		: config_manager::stage( std::forward< args >( a ) ... ) {}
 };
 
-template< typename ftor, typename = void >
-struct config_traits
-	{ typedef std::tuple<> used_configs; };
-
-template< typename ftor >
-struct config_traits< ftor, typename util::mention< typename ftor::used_configs >::type >
-	{ typedef typename ftor::used_configs used_configs; };
-
-template< typename ftor, typename used_configs = typename config_traits< ftor >::used_configs >
-struct configured_stage_from_functor;
-
-template< typename ftor, typename ... used_configs >
-struct configured_stage_from_functor< ftor, std::tuple< used_configs ... > >
-	: ftor {
-	template< typename ... args >
-	configured_stage_from_functor( args && ... a )
-		: ftor(
-			/*	Since the config_manager is likely in a base subobject, use lazy evaluation so it's called
-				inside the ftor's constructor, after base initialization. */
-			util::make_implicit_thunk( std::bind(
-				static_cast< used_configs & (configured_stage_from_functor::*) () >
-					( &configured_stage_from_functor::get_config< used_configs > ), this ) ) ...,
-			std::forward< args >( a ) ... ) {}
-	
-	template< typename client >
-	typename std::enable_if< ! std::is_base_of< config_manager_base, ftor >::value, client & >::type
-	get_config() { return this->cont.template get_config< client >(); }
-	
-	template< typename client >
-	typename std::enable_if< std::is_base_of< config_manager_base, ftor >::value, client & >::type
-	get_config() { return ftor::template get_config< client >(); }
-};
-
-template< typename ftor >
-struct configured_stage_from_functor< std::reference_wrapper< ftor >, std::tuple<> >
-	: std::reference_wrapper< ftor > {
-	configured_stage_from_functor( ftor &a )
-		: std::reference_wrapper< ftor >( a ) {}
-	
-	template< typename client >
-	typename std::enable_if< ! std::is_base_of< config_manager_base, ftor >::value, client & >::type
-	get_config() { return this->get().cont.template get_config< client >(); }
-	
-	template< typename client > // corner case: taking a reference directly to a config manager
-	typename std::enable_if< std::is_base_of< config_manager_base, ftor >::value, client & >::type
-	get_config() { return this->get().template get_config< client >(); }
-};
-
 template< typename cont, template< typename ... > class ... stages >
 struct stack_stages;
 
@@ -318,7 +294,7 @@ struct stack_stages< cont >
 
 template< typename cont, template< typename ... > class stage, template< typename ... > class ... rem >
 struct stack_stages< cont, stage, rem ... >
-	{ typedef configured_stage_from_functor< stage< typename stack_stages< cont, rem ... >::type > > type; };
+	{ typedef stage< typename stack_stages< cont, rem ... >::type > type; };
 
 template< template< typename ... > class ... stages, typename cont, typename ... aux >
 typename stack_stages< cont, stages ... >::type

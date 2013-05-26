@@ -15,8 +15,6 @@ template< typename output_iterator >
 class phase1_2 : public stage< output_iterator, phase1_2_config >,
 	pp_char_source_import_base {
 	
-	phase1_2_config const &config;
-	
 	enum states { tri1 = pp_char_source_last, backslash, msdos, rstring };
 	location_t file_pos;
 	int state;
@@ -53,9 +51,9 @@ class phase1_2 : public stage< output_iterator, phase1_2_config >,
 	}
 	
 public:
-	template< typename in_config_type, typename ... args >
-	phase1_2( in_config_type &&c, args && ... a )
-		: phase1_2::stage( std::forward< args >( a ) ... ), config( c ),
+	template< typename ... args >
+	phase1_2( args && ... a )
+		: phase1_2::stage( std::forward< args >( a ) ... ),
 		file_pos{ 1 }, state{ normal }, inhibit_ucn{ false } {
 		shift_reset();
 	}
@@ -73,7 +71,7 @@ public:
 		for (;;) switch ( state ) {
 		case normal:
 			switch ( c ) {
-			case '?':	if ( config.disable_trigraphs ) goto normal;
+			case '?':	if ( this->get_config().disable_trigraphs ) goto normal;
 						state = tri1;		shift( c );		return;
 			case '\\':	state = backslash;	shift( c );		return;
 			default: normal:				pass( c );		return;

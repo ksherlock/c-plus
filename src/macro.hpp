@@ -270,8 +270,8 @@ private:
 				arg.trim_end();
 				
 				try {
-					phase3< decltype( acc_it ), std::false_type > lexer( common.token_config,
-						std::make_shared< macro_substitution >( instantiate( inst, pen ++ ), arg.begin ), acc_it );
+					phase3< decltype( acc_it ), std::false_type > lexer(
+						std::make_shared< macro_substitution >( instantiate( inst, pen ++ ), arg.begin ), common.token_config, acc_it );
 
 					acc_limiter.reset( 1 );
 					lexer( { '"', 0 } );
@@ -350,7 +350,7 @@ private:
 				}
 				
 				try {
-					phase3< decltype( acc_it ), std::false_type > lexer( common.token_config, ends[0][ -1 ].source, acc_it );
+					phase3< decltype( acc_it ), std::false_type > lexer( ends[0][ -1 ].source, common.token_config, acc_it );
 					auto pos = ends[lhs][ -1 ].location; // use LHS for position of pasted token
 					
 					acc_limiter.reset( 1 );
@@ -499,13 +499,13 @@ public:
 
 template< typename output_iterator >
 class substitution_phase
-	: public derived_stage< macro_context< configured_stage_from_functor< macro_filter< output_iterator > > >, phase3_config >,
+	: public derived_stage< macro_context< macro_filter< output_iterator > >, phase3_config >,
 	protected macro_context_info {
 public:
-	template< typename in_config_type, typename ... args >
-	substitution_phase( in_config_type &&token_config, macro_context_info::name_map &&init_macros, args && ... a )
+	template< typename ... args >
+	substitution_phase( macro_context_info::name_map &&init_macros, args && ... a )
 		: substitution_phase::derived_stage( static_cast< macro_context_info & >( * this ), std::forward< args >( a ) ... ),
-		macro_context_info{ token_config, std::move( init_macros ) } {}
+		macro_context_info{ this->get_config(), std::move( init_macros ) } {}
 };
 
 }
