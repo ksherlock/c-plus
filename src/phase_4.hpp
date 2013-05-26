@@ -477,6 +477,9 @@ public:
 	void operator() ( token &&in ) {
 		using pp_constants::skip_space;
 		
+		if ( in == pp_constants::variadic && std::find( input.begin(), input.end(), pp_constants::define_directive ) == input.end() )
+			throw error( in, "The identifier __VA_ARGS__ is reserved (§16.3/5)." );
+		
 		switch ( state ) {
 		case entering: // one-shot state simply inserts whitespace #line directive if preserving space
 			if ( this->token_config.preserve_space && in.source ) {
