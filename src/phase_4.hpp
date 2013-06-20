@@ -244,14 +244,15 @@ class phase4
 			input = { std::move( saved_space ) };
 		} else if ( * pen == pp_constants::include_directive || * pen == pp_constants::line_directive ) {
 			// Handle directives allowing macros in arguments. This cannot be the default (§16/6).
-			input = process_macros( input.begin(), input.end() );
+			std::iter_swap( input.begin(), pen - 1 ); // drop whitespace after the # token
+			input = process_macros( pen - 1, input.end() );
 			pen = input.begin() + 1;
 			
 			if ( * pen == pp_constants::include_directive ) {
 				return handle_header( pen ); // flushes directive input and obtains new input
 			
 			} else if ( * pen == pp_constants::line_directive ) {
-				int32_t physical_line = pen->location & file_location::line_mask; // signed to prevent overflow below
+				std::ptrdiff_t physical_line = this->line_number( * pen ); // signed to prevent overflow below
 				
 				if ( skip_space( ++ pen, input.end() ) == input.end() )
 					throw error( input.front(), "Expected line number." );
@@ -301,7 +302,7 @@ class phase4
 		
 		expr.erase( std::remove_if( expr.begin(), expr.end(),
 									[]( token const &t ){ return t.type == token_type::ws; } ), expr.end() );
-		expr.push_back( { token_type::punct, "$", expr.back().source, expr.back().location } );
+		expr.push_back( { token_type::punct, "$", util::val< construct const & >( expr.back() ) } );
 		
 		pen = expr.begin(); // 5th pass (!): actually evaluate.
 		bool result = rudimentary_evaluate( pen );
@@ -330,7 +331,6 @@ class phase4
 	void handle_header( tokens::iterator pen ) {
 		using pp_constants::skip_space;
 		
-		token const &directive = * pen;
 		if ( skip_space( ++ pen, input.end() ) == input.end() )
 			throw error( input.front(), "Expected header name." );
 		
@@ -363,7 +363,7 @@ class phase4
 			name.erase( 0, 1 );
 		}
 		if ( ! header.is_open() ) { // before the path set, look in same directory as current file
-			std::string path = directive.source? directive.source->source.s : pp_constants::empty_string.s;
+			std::string path = this->presumed.filename.s; // TODO use backup of original path, not affected by #line
 			std::size_t pathlen = path.rfind( '/' );
 			if ( pathlen == std::string::npos ) pathlen = 1; // file directory = working directory
 			path = path.substr( 1, pathlen - 1 ) + name;
@@ -388,7 +388,7 @@ class phase4
 		}
 	opened:
 		token name_r = pen->reallocate( this->get_config().macro_pool ),
-			name_s{ token_type::header_name, string{ "\"", this->get_config().macro_pool }, pen->source, pen->location };
+			name_s{ token_type::string_lit, string{ "\"", this->get_config().macro_pool }, * pen };
 		for ( char c : name ) {
 			if ( c == '\\' || c == '"' ) name_s.s += '\\';
 			name_s.s += c;
@@ -399,27 +399,21 @@ class phase4
 			&& skip_space( ++ pen, input.end() ) != input.end() ) throw error( input.back(), "Extra tokens after header name." );
 		input.resize( 1 );
 		
-		phase1_2< phase3< std::reference_wrapper< phase4 > > > nested( std::make_shared< inclusion >( name_s.s, name_r ), * this );
-		
 		auto context_backup = this->presumed;
-		this->presumed = macro_context_info::presumptions();
+		this->presumed = macro_context_info::presumptions{ name_s };
 		
 		auto guard = guarded_headers.find( name_s.s );
 		if ( guard == guarded_headers.end() || evaluate_condition( guard->second.begin(), guard->second.end() ) ) {
 			if ( guard != guarded_headers.end() ) {
-				//std::cerr << "multiply including guarded header " << name_s.s << '\n'; -- TODO implement warnings
+				this->pass_or_throw< error >( name_r, "Warning: multiply including guarded header" );
 			}
 			auto guard_detect_backup = std::move( guard_detect );
 			guard_detect = { true, name_s.s, pp_constants::guard_default, conditional_depth };
 			
 			state = entering;
 			
-			char buf[ 10000 ];
-			int count;
-			do {
-				count = header.sgetn( buf, sizeof buf );
-				pass( buf, buf + count, nested );
-			} while ( count == sizeof buf );
+			phase1_2< phase3< std::reference_wrapper< phase4 > > > nested( * this );
+			instantiate( std::make_shared< inclusion >( name, name_r ), nested );
 			finalize( nested ); // does not finalize *this, only phases 1-3
 			
 			state = entering;
@@ -482,16 +476,13 @@ public:
 		
 		switch ( state ) {
 		case entering: // one-shot state simply inserts whitespace #line directive if preserving space
-			if ( this->token_config.preserve_space && in.source ) {
-				phase4::base::operator() ( pp_constants::line_marker );
-				token loc = this->get_location( in, phase4::base::presumption::line );
-				loc.type = token_type::ws;
-				phase4::base::operator() ( std::move( loc ) );
-				phase4::base::operator() ( pp_constants::space );
-				loc = this->get_location( in, phase4::base::presumption::file );
-				loc.type = token_type::ws;
-				phase4::base::operator() ( std::move( loc ) );
-				if ( in.s[0] != '\n' ) phase4::base::operator() ( pp_constants::newline );
+			if ( this->token_config.preserve_space && in.get_parent< input_source >() ) {
+				using namespace pp_constants;
+				tokens comment_directive{ line_marker, { line_macro.type, line_macro.s, in }, space, file_macro, in.s[0] != '\n'? newline : placemarker };
+				for ( auto &t : process_macros( comment_directive.begin(), comment_directive.end() ) ) {
+					t.type = token_type::ws;
+					phase4::base::operator() ( std::move( t ) );
+				}
 			}
 			state = normal;
 		
@@ -503,9 +494,8 @@ public:
 				}
 				if ( in.type == token_type::directive ) { // consume and discard the #
 					if ( this->paren_depth != 0 )
-						throw error( in, "A macro invokation cannot span a directive (§16.3/11)." );
+						throw error( in, "A macro invocation cannot span a directive (§16.3/11)." );
 					
-					if ( input.empty() ) throw error( in, "ICE: Directive not preceded by newline?" );
 					this->pass( std::make_move_iterator( input.begin() ), std::make_move_iterator( input.end() - 1 ) ); // flush uncalled function
 					input.erase( input.begin(), input.end() - 1 ); // save trailing space token (guaranteed to exist)
 					state = directive;
@@ -621,10 +611,9 @@ public:
 								throw error( in, "_Pragma operand must be a string (§16.9)." );
 							
 							tokens args;
-							phase3< std::back_insert_iterator< tokens >, std::false_type > tokenize( in.source, get_config< phase3_config >(), args );
-							in.s = destringize( std::move( in.s ) ).c_str();
-							for ( std::uint8_t c : in.s ) tokenize( { c, in.location } );
-							finalize( tokenize );
+							phase3< std::back_insert_iterator< tokens >, std::false_type > tokenizer( get_config< phase3_config >(), args );
+							instantiate( std::make_shared< raw_text >( destringize( in.s ), in ), tokenizer );
+							finalize( tokenizer );
 							auto pen = args.begin();
 							if ( pp_constants::skip_space( pen, args.end() ) == args.end() ) return;
 							

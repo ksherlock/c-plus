@@ -8,20 +8,30 @@
 
 namespace cplus {
 
-struct inclusion : instantiation { // source file (e.g. header) inclusion instantiates the file's contents
-	string file_name;
-	inclusion( string in_file_name, token in_source )
-		: instantiation( in_source ), file_name( in_file_name ) {}
+struct token : construct {
+	int type;
+	string s;
+
+	token() : type(), s() {}
+	token( int in_type, string const &in_s, construct in_c = {} ) // pseudo-aggregate
+		: construct( std::move( in_c ) ), type( in_type ), s( in_s ) {}
+
+	token &assign_content( token const &rhs )
+		{ type = rhs.type; s = rhs.s; return * this; }
+	token &reallocate( string_pool &pool )
+		{ s = repool( s, pool ); return * this; }
+
+	friend bool operator== ( token const &l, token const &r )
+		{ return l.type == r.type && l.s == r.s; }
+	friend bool operator!= ( token const &l, token const &r )
+		{ return ! ( l == r ); }
 };
+typedef std::vector< token > tokens;
+
+typedef raw_file inclusion;
 
 // Output format for Phases 1-2
 CPLUS_IMPORTABLE_ENUM( pp_char_source, normal, ucn, trigraph )
-
-namespace file_location {
-	int const column_shift = 32; // columns in MSW so they simply wrap around on overflow
-	location_t const column_increment = location_t( 1 ) << column_shift,
-					line_mask = column_increment - 1;
-}
 
 struct config_pragma_base : config_base {
 	typedef std::function< void( tokens && ) > pragma_function;
@@ -31,9 +41,8 @@ struct config_pragma_base : config_base {
 };
 struct propagate_pragma {}; // exception indicates pragma handler is defaulting
 
-struct pp_char {
-	std::uint8_t c;
-	location_t p; // position in file: column * 2^32 + line.
+struct pp_char : raw_char {
+	pp_char( raw_char const &in_c = {}, pp_char_source in_s = {} ) : raw_char( in_c ), s( in_s ) {}
 	pp_char_source s;
 };
 
@@ -76,18 +85,25 @@ struct phase3_config : config_pragma_base {
 struct macro_replacement : instantiation { // source of tokens from replacement list
 	tokens const args; // substitutions point into this
 	tokens const &replacement; // points to name_map; positions index this
-	macro_replacement( token &&in_origin, tokens const &in_replacement, tokens &&in_args )
+	macro_replacement( construct in_origin, tokens const &in_replacement, tokens &&in_args )
 		: instantiation( std::move( in_origin ) ), args( std::move( in_args ) ), replacement( in_replacement ) {}
-	macro_replacement( token &&in_origin, tokens &&in_replacement ) // for __LINE__ and __FILE__ macros
+	macro_replacement( construct in_origin, tokens &&in_replacement ) // for __LINE__ and __FILE__ macros
 		: instantiation( std::move( in_origin ) ), args( std::move( in_replacement ) ), replacement( args ) {}
 	
-	friend token instantiate( std::shared_ptr< macro_replacement > shared, tokens::const_iterator source )
-		{ return token{ source->type, source->s, shared, location_t( source - shared->replacement.begin() ) }; }
+	virtual std::size_t size() const final override
+		{ return replacement.size(); }
+	virtual token const &component( location_t i ) const final override
+		{ return replacement[ i ]; }
 };
 struct macro_substitution : instantiation { // an argument used within a macro
-	tokens::const_iterator arg_begin; // points into argument list; instantiation base points into replacement list
-	macro_substitution( token &&in_use, tokens::const_iterator in_arg )
-		: instantiation( in_use ), arg_begin( in_arg ) {}
+	tokens::const_iterator arg_begin, arg_end; // points into argument list; instantiation base points into replacement list
+	macro_substitution( construct in_use, tokens::const_iterator in_beg, tokens::const_iterator in_end )
+		: instantiation( std::move( in_use ) ), arg_begin( in_beg ), arg_end( in_end ) {}
+	
+	virtual std::size_t size() const final override
+		{ return arg_end - arg_begin; }
+	virtual token const &component( location_t i ) const final override
+		{ return arg_begin[ i ]; }
 };
 
 std::string destringize( std::string in );

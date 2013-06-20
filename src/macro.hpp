@@ -19,9 +19,9 @@ struct macro_context_info { // information that determines how macros are expand
 	
 	typedef std::unordered_map< string, tokens const > name_map;
 	name_map macros;
-	struct presumptions { // Specific to current file, errors result if not empty and macro invokation spans EOF.
+	struct presumptions { // Specific to current file. Caller's info erroneously used if macro invocation spans EOF.
+		token filename; // may be set by #line
 		std::int32_t line_displacement; // controlled by #line directive
-		token filename; // also set by #line; if empty, use token::source
 	} presumed;
 };
 
@@ -30,17 +30,17 @@ class macro_context : public stage< output_iterator > {
 	typedef macro_context_info::name_map name_map;
 	macro_context_info const &common; // points to sibling subobject of phase4 next to root context
 
-	typedef std::vector< string const * > call_stack;
+	typedef std::vector< token /*const - GCC workaround */ > call_stack;
 	name_map::const_pointer definition; // function-like macro awaiting call
 protected:
 	tokens input; // buffered arguments or scratch storage
 	std::size_t paren_depth; // determines when to call macro
 
 public:
-	template< typename ... input >
-	macro_context( macro_context_info const &common_info, input && ... a )
-		: macro_context::stage( std::forward< input >( a ) ... ), common( common_info ),
-		definition( nullptr ), paren_depth( 0 ) {}
+	template< typename ... args >
+	macro_context( macro_context_info const &common_info, args && ... a )
+		: macro_context::stage( std::forward< args >( a ) ... ), common( common_info ),
+		definition( nullptr ), input{ pp_constants::placemarker }, paren_depth( 0 ) {}
 	
 	// flush and operator() accept list of callers as rvalue, return it unchanged
 	void flush( call_stack &&callers = call_stack() ) {
@@ -62,9 +62,7 @@ public:
 	void operator() ( token &&in, call_stack &&callers = call_stack() ) {
 		bool stop_recursion = false; // perform this check before argument gets moved
 		if ( in.type == token_type::id ) {
-			for ( auto caller : callers ) {
-				if ( * caller == in.s ) stop_recursion = true;
-			}
+			stop_recursion = std::find( callers.begin(), callers.end(), in ) != callers.end();
 		}
 		if ( paren_depth == 0 ) {
 			if ( definition ) {
@@ -122,31 +120,17 @@ public:
 	}
 	
 protected:
-	enum class presumption { line, file };
-	token get_location( token const &in, presumption kind ) {
-		token const *t = & in;
-		try {
-			while ( typeid( * t->source.get() ) != typeid (inclusion) ) {
-				if ( auto subst = dynamic_cast< macro_substitution * >( t->source.get() ) ) {
-					t = & subst->arg_begin[ t->location ]; // resolve an argument to its own value, not whole expansion
-				} else {
-					t = & t->source->source;
-				}
-			}
-		} catch ( std::bad_typeid & ) { throw error( in, "ICE: Failed to evaluate __LINE__ or __FILE__." ); }
-		
-		if ( kind == presumption::line ) {
-			std::int32_t logical_line = std::int32_t( t->location & file_location::line_mask ) + common.presumed.line_displacement;
-			return { token_type::num, string{ std::to_string( logical_line ).c_str(), common.token_config.stream_pool } };
-		} else {
-			if ( common.presumed.filename == token() ) {
-				return { token_type::string_lit, static_cast< inclusion const & >( * t->source ).file_name,
-							t->source->source.source, t->source->source.location };
-			} else {
-				return common.presumed.filename;
-			}
-		}
+	static std::size_t line_number( token const &t ) {
+		std::size_t line = 1;
+		auto location = t.get_location< input_source >();
+		std::get< 0 >( location ).filter( [ &line, &location ]( std::uint8_t c ) {
+			if ( std::get< 1 >( location ) == 0 ) return;
+			-- std::get< 1 >( location );
+			line += c == '\n';
+		} );
+		return line;
 	}
+
 private:
 	template< typename i > // either tokens::iterator or tokens::const_iterator
 	static typename std::iterator_traits< i >::pointer skip_space( i &it )
@@ -172,16 +156,21 @@ private:
 		std::vector< arg_info > args_info; // size = param count
 		tokens::iterator input_pen = input.begin();
 		bool leading_space = skip_space( input_pen );
-		token name( std::move( * input_pen ) );
+		callers.push_back( std::move( * input_pen ) ); // Register in call stack before rescanning.
 		if ( function_like ) skip_space( ++ input_pen ); // ignore space between name and paren
 		
 		// save macro name and arguments, or special replacement list, in persistent instantiation object
 		auto inst = definition->first == pp_constants::line_macro.s || definition->first == pp_constants::file_macro.s?
-			std::make_shared< macro_replacement >( std::move( name ), tokens{ pp_constants::space,
-				get_location( name, definition->first == pp_constants::line_macro.s? presumption::line : presumption::file ) } )
-			: std::make_shared< macro_replacement >( std::move( name ), definition->second,
-				tokens{ std::move_iterator< tokens::iterator >{ input_pen }, std::move_iterator< tokens::iterator >{ input.end() } } );
-		input.erase( input.begin() + leading_space, input.end() );
+			std::make_shared< macro_replacement >( callers.front(), tokens{ pp_constants::space,
+				definition->first == pp_constants::line_macro.s? // line number has no location as it is generated ex nihilo
+				token{ token_type::num, string{ std::to_string( line_number( callers.front() ) ).c_str(), common.token_config.stream_pool } }
+				: common.presumed.filename
+			} )
+		: std::make_shared< macro_replacement >( callers.front(), definition->second,
+			tokens{ std::move_iterator< tokens::iterator >{ input_pen }, std::move_iterator< tokens::iterator >{ input.end() } } );
+		
+		input.erase( input.begin() + leading_space, input.end() ); // All input has been moved from except space acc.
+		definition = nullptr; // Clear the "registers" to avoid confusing rescanning.
 		tokens const &def = inst->replacement;
 		
 		if ( function_like ) { //									======================== IDENTIFY ARGUMENTS ===
@@ -211,8 +200,6 @@ private:
 				} else throw error( * arg_pen, "Too many arguments to macro." );
 			}
 		}
-		callers.push_back( & definition->first ); // Register in call stack before rescanning.
-		definition = nullptr; // Clear the "registers" to avoid confusing rescanning.
 		
 		// obtain iterator access to self
 		auto local( std::bind( ref( * this ), std::placeholders::_1, util::rref( callers ) ) );
@@ -242,7 +229,7 @@ private:
 				pass( std::make_move_iterator( acc ), std::make_move_iterator( acc_limiter.base ), local );
 				acc[ 1 ] = token(); // be sure to invalidate recursion stop in acc[1]
 				acc_limiter.base = acc;
-				* acc_limiter.base ++ = instantiate( inst, pen ++ ); // only consume this non-operator token
+				* acc_limiter.base ++ = instantiate_component( inst, pen ++ - def.begin() ); // only consume this non-operator token
 				if ( pen != def.end() ) trailing_space = skip_space( pen ); // and this ws
 				leading_token = true;
 			}
@@ -270,26 +257,28 @@ private:
 				arg.trim_end();
 				
 				try {
-					phase3< decltype( acc_it ), std::false_type > lexer(
-						std::make_shared< macro_substitution >( instantiate( inst, pen ++ ), arg.begin ), common.token_config, acc_it );
-
-					acc_limiter.reset( 1 );
-					lexer( { '"', 0 } );
+					string s( 1, '\"' );
 					for ( auto pen = arg.begin; pen != arg.end; ++ pen ) {
 						if ( pen->type == token_type::ws && ! pen->s.empty() ) {
-							lexer( { ' ' } );
+							s += ' ';
 							continue;
 						}
 						for ( std::uint8_t c : pen->s ) {
 							if ( ( pen->type == token_type::string_lit || pen->type == token_type::char_lit )
 								&& ( c == '"' || c == '\\' // escape quotes and backslashes in strings, incl. hidden in UCNs
 									|| c >= 0xC0 || ( c < 0x80 && ! char_in_set( char_set::basic_source, c ) ) ) ) {
-								lexer( { '\\', static_cast< size_t >( pen - arg.begin ) } );
+								s += '\\';
 							}
-							lexer( { c, static_cast< size_t >( pen - arg.begin ) } );
+							s += c;
 						}
 					}
-					lexer( { '"', static_cast< size_t >( arg.end - arg.begin ) } );
+					s += '\"';
+					
+					acc_limiter.reset( 1 );
+					phase3< decltype( acc_it ), std::false_type > lexer( common.token_config, acc_it );
+					instantiate( std::make_shared< raw_text >( s,
+						instantiate_component( std::make_shared< macro_substitution >( std::move( * pen ++ ), arg.begin, arg.end ), 0 )
+					), lexer );
 					finalize( lexer );
 				} catch ( std::range_error & ) {
 					goto stringize_wrong_count;
@@ -300,7 +289,7 @@ private:
 			}
 			
 			if ( concat ) { //													=================== CONCATENATE ===
-				if ( ! stringize ) acc[ 1 ] = instantiate( inst, pen ++ ); // if value of pen is used for RHS, increment to next token
+				if ( ! stringize ) acc[ 1 ] = instantiate_component( inst, pen ++ - def.begin() ); // if value of pen is used for RHS, increment to next token
 				
 				enum { lhs, rhs }; // [0] is LHS, [1] is RHS:
 				token const *begins[ 2 ] = { acc + 0, acc + 1 }, *ends[ 2 ] = { acc + 1, acc + 2 };
@@ -315,10 +304,8 @@ private:
 					arg_info arg = args_info[ param_index ];
 					side? arg.trim_begin() : arg.trim_end(); // strip ws from end of lhs and start of rhs
 					
-					auto subst = std::make_shared< macro_substitution >( std::move( acc[ side ] ), arg.begin ); // use new instantiation obj
-					for ( auto arg_pen = arg.begin; arg_pen != arg.end; ++ arg_pen ) { // instantiate argument for use of parameter
-						copies[ side ].push_back( { arg_pen->type, arg_pen->s, subst, static_cast< size_t >( arg_pen - arg.begin ) } );
-					}
+					instantiate( std::make_shared< macro_substitution >( std::move( acc[ side ] ), arg.begin, arg.end ), // use new instantiation obj
+						[&]( token t ) { copies[ side ].push_back( std::move( t ) ); } ); // instantiate argument for use of parameter
 					begins[ side ] = &* copies[ side ].begin(); // Tentatively strip recursion stops; restore if no catenation is done:
 					stripped_stops[ side ] = ! copies[ side ].empty() && copies[ side ].back() == pp_constants::recursion_stop;
 					ends[ side ] = &* copies[ side ].end() - stripped_stops[ side ];
@@ -350,12 +337,10 @@ private:
 				}
 				
 				try {
-					phase3< decltype( acc_it ), std::false_type > lexer( ends[0][ -1 ].source, common.token_config, acc_it );
-					auto pos = ends[lhs][ -1 ].location; // use LHS for position of pasted token
+					phase3< decltype( acc_it ), std::false_type > lexer( common.token_config, acc_it );
 					
 					acc_limiter.reset( 1 );
-					for ( std::uint8_t c : std::move( ends[lhs][ -1 ].s ) ) lexer( { c, pos } ); // move to temporaries to be
-					for ( std::uint8_t c : std::move( begins[rhs][ 0 ].s ) ) lexer( { c, pos } ); // sure overwriting acc is safe
+					instantiate( std::make_shared< raw_text >( ends[lhs][ -1 ].s + begins[rhs][ 0 ].s, ends[lhs][ -1 ] ), lexer );
 					finalize( lexer );
 				} catch ( std::range_error & ) {
 					goto catenate_wrong_count;
@@ -393,11 +378,8 @@ private:
 					} );
 					
 					arg_info arg = args_info[ param - def.begin() ];
-					auto subst = std::make_shared< macro_substitution >( std::move( acc[ 0 ] ), arg.begin );
-					for ( auto arg_pen = arg.begin; arg_pen != arg.end; ++ arg_pen ) {
-						nested( token{ arg_pen->type, arg_pen->s,
-								subst, std::size_t( arg_pen - arg.begin ) }, std::move( callers ) );
-					}
+					instantiate( std::make_shared< macro_substitution >( std::move( acc[ 0 ] ), arg.begin, arg.end ),
+						std::bind( std::ref( nested ), std::placeholders::_1, util::rref( callers ) ) );
 					nested.flush( std::move( callers ) );
 					
 					callers.push_back( caller_self );
@@ -434,7 +416,7 @@ macro_context_info::name_map::value_type normalize_macro_definition( tokens &&in
 			if ( * pen == variadic )
 				throw error( * pen, "The identifier __VA_ARGS__ is reserved (§16.3/5)." );
 			if ( * pen == variadic_decl ) { // convert punctuator "..." to identifier "__VA_ARGS__"
-				replacement.push_back( { token_type::id, variadic.s, pen->source, pen->location } );
+				replacement.push_back( pen->assign_content( variadic ) );
 			} else {
 				if ( pen->type != token_type::id )
 					throw error( * pen, "Parameter name must be an identifier." );
@@ -505,7 +487,7 @@ public:
 	template< typename ... args >
 	substitution_phase( macro_context_info::name_map &&init_macros, args && ... a )
 		: substitution_phase::derived_stage( static_cast< macro_context_info & >( * this ), std::forward< args >( a ) ... ),
-		macro_context_info{ this->get_config(), std::move( init_macros ) } {}
+		macro_context_info{ this->get_config(), std::move( init_macros ), { pp_constants::empty_string } } {}
 };
 
 }

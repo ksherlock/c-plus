@@ -16,7 +16,6 @@ class phase1_2 : public stage< output_iterator, phase1_2_config >,
 	pp_char_source_import_base {
 	
 	enum states { tri1 = pp_char_source_last, backslash, msdos, rstring };
-	location_t file_pos;
 	int state;
 	
 	int unicode_remaining; // used by UCN state machine
@@ -28,8 +27,8 @@ class phase1_2 : public stage< output_iterator, phase1_2_config >,
 	void shift_reset()
 		{ shift_p = shift_buffer; }
 	
-	void shift( std::uint8_t c )
-		{ * shift_p ++ = pp_char{ c, file_pos, normal }; }
+	void shift( raw_char const &c )
+		{ * shift_p ++ = { c, normal }; }
 	
 	void unshift() {
 		inhibit_ucn = false;
@@ -43,9 +42,9 @@ class phase1_2 : public stage< output_iterator, phase1_2_config >,
 		shift_reset();
 	}
 	
-	void pass( std::uint8_t c ) try {
+	void pass( raw_char const &c ) try {
 		inhibit_ucn = false;
-		phase1_2::stage::pass( pp_char{ c, file_pos, static_cast< pp_char_source >( state ) } );
+		phase1_2::stage::pass( pp_char{ c, static_cast< pp_char_source >( state ) } );
 	} catch ( raw_string_notification &n ) { // follows quote, which is never shifted
 		state = n.entering? (int) rstring : normal;
 	}
@@ -54,23 +53,15 @@ public:
 	template< typename ... args >
 	phase1_2( args && ... a )
 		: phase1_2::stage( std::forward< args >( a ) ... ),
-		file_pos{ 1 }, state{ normal }, inhibit_ucn{ false } {
-		shift_reset();
-	}
+		state{ normal }, inhibit_ucn{ false }, shift_p{ shift_buffer } {}
 	
-	void flush() // append newline, §2.2/2. Don't execute a last-line directive ending in "\".
-		{ (*this)( '\n' ); }
+	void flush()
+		{ unshift(); }
 	
-	void operator()( std::uint8_t c ) {
-		if ( c == '\n' ) {
-			file_pos = ( file_pos + 1 ) & file_location::line_mask;
-		} else {
-			file_pos += file_location::column_increment;
-		}
-		
+	void operator()( raw_char const &c ) {
 		for (;;) switch ( state ) {
 		case normal:
-			switch ( c ) {
+			switch ( c.c ) {
 			case '?':	if ( this->get_config().disable_trigraphs ) goto normal;
 						state = tri1;		shift( c );		return;
 			case '\\':	state = backslash;	shift( c );		return;
@@ -78,7 +69,7 @@ public:
 			}
 		
 		case tri1:
-			switch ( c ) {
+			switch ( c.c ) {
 			case '?':	state = trigraph;	shift( c );		return;
 			default:	state = normal;		unshift();		continue;
 			}
@@ -86,20 +77,20 @@ public:
 		case trigraph:
 			static char const	tri_source[] =	"='()!<>-",
 								tri_dest[] =	"#^[]|{}~";
-			if ( char const *sp = std::strchr( tri_source, c ) ) {
+			if ( char const *sp = std::strchr( tri_source, c.c ) ) {
 				shift_reset();
 				pass( tri_dest[ sp - tri_source ] ); // pass trigraph state to client...
 				state = normal; // ... before resetting state
 				return;
-			} else if ( c == '/' ) {
+			} else if ( c.c == '/' ) {
 				state = backslash;
 				shift( '\\' );
 				shift_buffer->s = trigraph;
 				return;
-			} else if ( c == '?' ) { // may be a trigraph preceded by a "?"
+			} else if ( c.c == '?' ) { // may be a trigraph preceded by a "?"
 				phase1_2::stage::pass( * shift_buffer ); // unshift only that "?"
 				shift_p = std::move( shift_buffer + 1, shift_p, shift_buffer );
-				shift( c ); // shift current "?"
+				shift( c.c ); // shift current "?"
 				return; // remain in same state
 			
 			} else { // not a trigraph
@@ -107,13 +98,13 @@ public:
 			}
 		
 		case backslash:
-			switch ( c ) {
+			switch ( c.c ) {
 			case 'u':
 			case 'U':	if ( inhibit_ucn ) {
 						state = normal;		unshift();		continue;
 						}
 						ucn_acc = 0;
-						unicode_remaining = c == 'u'? 4 : 8;
+						unicode_remaining = c.c == 'u'? 4 : 8;
 						state = ucn;		shift( c );		return;
 			case '\r':	state = msdos;		shift( c );		return; // phase 2
 			case '\n':	state = normal;		shift_reset();	return; // phase 2
@@ -121,7 +112,7 @@ public:
 			}
 		
 		case msdos: // phase 2. Delete any \CRLF, not checking for consistency.
-			switch ( c ) {
+			switch ( c.c ) {
 			case '\n':	state = normal;		shift_reset();	return;
 			default:	state = normal;		unshift();		continue;
 			}
@@ -129,9 +120,9 @@ public:
 		case ucn:
 			{
 				int digit;
-				if ( c >= '0' && c <= '9' ) digit = c - '0';
-				else if ( c >= 'a' && c <= 'f' ) digit = c - 'a' + 10;
-				else if ( c >= 'A' && c <= 'F' ) digit = c - 'A' + 10;
+				if ( c.c >= '0' && c.c <= '9' ) digit = c.c - '0';
+				else if ( c.c >= 'a' && c.c <= 'f' ) digit = c.c - 'a' + 10;
+				else if ( c.c >= 'A' && c.c <= 'F' ) digit = c.c - 'A' + 10;
 				else {
 						state = normal;		unshift();		continue;
 				}

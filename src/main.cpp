@@ -14,12 +14,11 @@
 
 namespace {
 using namespace cplus;
-void point_at( token const & );
+void point_at( construct const & );
 
-void point_at_inclusion( token const &t ) {
-	auto source = static_cast< inclusion * >( t.source.get() );
-	std::string path = source->file_name.c_str();
-	path = path.substr( 1, path.size() - 2 );
+void point_at_inclusion( construct const &t ) {
+	auto source = t.get_parent< inclusion >();
+	std::string path = source->path.c_str();
 	std::ifstream in( path, std::ios::in | std::ios::binary );
 	if ( ! in.is_open() ) {
 		std::cerr << "Could not open source file " << path << '\n';
@@ -27,18 +26,15 @@ void point_at_inclusion( token const &t ) {
 		in.exceptions( std::ios::badbit | std::ios::failbit );
 		std::cerr.exceptions( std::ios::badbit | std::ios::failbit );
 		
-		std::uint32_t line = t.location & file_location::line_mask,
-					column = t.location >> file_location::column_shift;
-		column = std::max( column, std::uint32_t( 1 ) ); // advance newline to beginning of next line - hopefully never happens
-		
-		for ( std::uint32_t l = 1; l != line; l += in.get() == '\n' ) ; // throws at eof
+		std::size_t line = 1, column = std::max( std::get< 1 >( t.get_location< inclusion >() ), 1ull );
 		std::string line_text;
-		getline( in, line_text );
+		while ( getline( in, line_text ) && column > line_text.size() + 1 ) column -= line_text.size() + 1, ++ line;
+		
 		std::cerr << line_text << '\n';
 		std::replace_copy_if( & line_text[0], & line_text[0] + column - 1, // align caret with error
 			std::ostream_iterator< char >( std::cerr ),
 			std::bind1st( std::not_equal_to< char >(), '\t' ), ' ' ); // preserve tabs for spacing on console
-		std::cerr << "^ here\n" << source->file_name << ": line " << line << ", column " << column << '\n';
+		std::cerr << "^ here\n" << source->path << ": line " << line << ", column " << column << '\n';
 	} catch ( std::ios::failure & ) {
 		if ( in.eof() ) std::cerr << "at end of input\n";
 		else std::perror( "I/O error while printing context" );
@@ -48,34 +44,30 @@ void point_at_inclusion( token const &t ) {
 	}
 }
 
-void point_at_replacement( token const &t, bool deep = true ) {
-	auto source = static_cast< macro_replacement * >( t.source.get() );
-	point_at( source->replacement[ t.location ] );
+void point_at_replacement( construct const &t, bool deep = true ) {
+	point_at( t.get_source< macro_replacement >() ); // point inside the macro definition
 	if ( deep ) { // don't point out how a parameter came to be instantiated, after tracing its argument
-		std::cerr << "in replacement of " << source->source.s << '\n';
-		point_at( source->source );
+		auto && param = t.get_source< macro_substitution >();
+		std::cerr << "in replacement of " << param.s << '\n';
+		point_at( param );
 	}
 }
 
-void point_at_substitution( token const &t ) {
-	auto source = static_cast< macro_substitution * >( t.source.get() );
-	point_at( source->arg_begin[ t.location ] );
-	if ( static_cast< macro_replacement * >( source->source.source.get() ) // substitution only occurs within replacement
-			->replacement[ source->source.location ].source ) { // don't point at internal macros such as "defined" or "#"
+void point_at_substitution( construct const &t ) {
+	auto source = t.get_parent< macro_substitution >();
+	point_at( t.get_source< macro_substitution >() );
+	if ( t.get_source< macro_replacement >().get_parent() ) { // don't point at internal macros such as "defined" or "#"
 		std::cerr << "in macro parameter\n";
-		point_at_replacement( source->source, false );
-	} else {
-		std::cerr << "(not descending into " << source->source.s << ")\n";
+		point_at_replacement( t.get_source< macro_replacement >(), false );
 	}
 }
 
-void point_at( token const &t ) {
-	if ( dynamic_cast< inclusion * >( t.source.get() ) ) point_at_inclusion( t );
-	else if ( dynamic_cast< macro_replacement * >( t.source.get() ) ) point_at_replacement( t );
-	else if ( dynamic_cast< macro_substitution * >( t.source.get() ) ) point_at_substitution( t );
-	else if ( t.source ) std::cerr << "error message dispatch failure ("
-		<< typeid( * t.source.get() ).name() << " @ " << t.source.get() << ")\n";
-	else std::cerr << "(null source link for \"" << t.s << "\"!)\n";
+void point_at( construct const &t ) {
+	if ( dynamic_cast< inclusion const * >( t.get_parent() ) ) point_at_inclusion( t );
+	else if ( dynamic_cast< macro_replacement const * >( t.get_parent() ) ) point_at_replacement( t );
+	else if ( dynamic_cast< macro_substitution const * >( t.get_parent() ) ) point_at_substitution( t );
+	else if ( t.get_parent() ) std::cerr << "error message dispatch failure ("
+		<< typeid( * t.get_parent() ).name() << " @ " << t.get_parent() << ")\n";
 }
 }
 
@@ -87,31 +79,27 @@ int main( int argc, char *argv[] ) {
 	
 	auto && pile = cplus::autoconfigured_pile< cplus::phase1_2, cplus::phase3, cplus::phase4, cplus::pragma_filter > (
 		cplus::util::amalgamate(
-			[&count]( cplus::token &&token ){ std::fwrite( token.s.c_str(), 1, token.s.size(), stdout ); },
+			[&count]( cplus::token &&token ){ std::fwrite( token.s.c_str(), 1, token.s.size(), stdout ); std::fwrite( "·", 1, std::strlen( "·" ), stdout ); },
 			[]( cplus::error && err ) {
 				std::clog << err.what() << '\n';
-				if ( ! err.p.source ) std::cerr << "but I don't know where\n";
-				point_at( err.p );
+				point_at( static_cast< token const & >( * err.p ) );
 			}
-		),
-		nullptr
+		)
 	);
 
-	char initialization[] =
+	instantiate( std::make_shared< cplus::raw_text >(
 		"#define __STDC__ 1\n"
 		"#define __cplusplus 199711L //201103L\n"
 		"#define __i386__ 1\n"
 		"#define __LP64__ 1\n"
 		"#define __GNUC__ 4\n"
+		"#pragma preserve_space 1\n"
 		"#pragma system_path "
-			"\"/usr/local/lib/gcc/x86_64-apple-darwin12.2.0/4.8.0/include/\" "
+			"\"/usr/local/lib/gcc/x86_64-apple-darwin12.4.0/4.9.0/include/\" "
 			"\"/usr/include/\" \"/usr/include/sys/\" \"/usr/local/include/\" "
-			"\"/usr/local/include/c++/4.8.0/\" "
-			"\"/usr/local/include/c++/4.8.0/x86_64-apple-darwin12.2.0/i386/\"\n"
-		//"#include <iostream>\n"
-		;
-	
-	cplus::pass( initialization, std::end( initialization ) - 1, pile );
+			"\"/usr/local/include/c++/4.9.0/\" "
+			"\"/usr/local/include/c++/4.9.0/x86_64-apple-darwin12.4.0/i386/\"\n"
+	), pile );
 	
 	cplus::pass( std::istreambuf_iterator< char >{ std::cin }, std::istreambuf_iterator< char >{}, pile );
 	finalize( pile );
