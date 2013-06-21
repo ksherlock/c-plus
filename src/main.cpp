@@ -31,7 +31,7 @@ void point_at_inclusion( construct const &t ) {
 		while ( getline( in, line_text ) && column > line_text.size() + 1 ) column -= line_text.size() + 1, ++ line;
 		
 		std::cerr << line_text << '\n';
-		std::replace_copy_if( & line_text[0], & line_text[0] + column - 1, // align caret with error
+		std::replace_copy_if( & line_text[0], & line_text[0] + column, // align caret with error
 			std::ostream_iterator< char >( std::cerr ),
 			std::bind1st( std::not_equal_to< char >(), '\t' ), ' ' ); // preserve tabs for spacing on console
 		std::cerr << "^ here\n" << source->path << ": line " << line << ", column " << column << '\n';
