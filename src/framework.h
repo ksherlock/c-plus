@@ -85,9 +85,14 @@ struct bad_pass *pass( util::poor_conversion, util::poor_conversion ) { static_a
 
 template< typename tag = struct tag, typename fn, typename v > // Qualified-id avoids ADL and prevents recursion, tag enables ADL and recursion.
 typename std::enable_if< std::is_same< bad_pass *, decltype( cplus::pass( std::declval< fn >(), std::declval< v >() ) ) >::value,
-	 typename util::mention< decltype( pass< tag >( std::declval< fn >().cont, std::declval< v >() ) ) >::type >::type
+	typename util::mention< decltype( pass< tag >( std::declval< fn >().cont, std::declval< v >() ) ) >::type >::type
 pass( fn && obj, v && val )
 	{ pass( std::forward< fn >( obj ).cont, std::forward< v >( val ) ); }
+
+template< typename tag = struct tag, typename w, typename v >
+typename util::mention< decltype( pass( std::declval< w & >(), std::declval< v >() ) ) >::type
+pass( std::reference_wrapper< w > wrap, v && val )
+	{ pass< tag >( wrap.get(), std::forward< v >( val ) ); }
 
 template< typename fn, typename v >
 void pass( fn & obj, v && val, util::mention< std::tuple<> > )
@@ -119,10 +124,10 @@ void pass( iit first, iit last, obj && o ) {
 	if ( ! std::is_reference< obj >::value ) finalize( o );
 }
 
-template< typename exception_type, typename output_iterator, typename ... args >
-auto pass_or_throw( output_iterator & o, args && ... a )
-	-> typename util::mention< decltype( pass< tag >( std::declval< output_iterator >(), std::declval< exception_type >() ) ) >::type
-	{ pass( std::forward< output_iterator >( o ), exception_type{ std::forward< args >( a ) ... } ); }
+template< typename exception_type, typename obj, typename ... args >
+typename util::mention< decltype( pass< tag >( std::declval< obj >(), std::declval< exception_type >() ) ) >::type
+pass_or_throw( obj && o, args && ... a )
+	{ pass( std::forward< obj >( o ), exception_type{ std::forward< args >( a ) ... } ); }
 
 template< typename exception_type, typename ... args >
 void pass_or_throw( util::poor_conversion, args && ... a )
@@ -226,9 +231,6 @@ finalize( s &o ) {
 	o.flush();
 	finalize( o.cont );
 }
-
-template< typename t >
-void finalize( std::reference_wrapper< t > const & ) {} // Do not propagate termination through references.
 
 typedef std::uint64_t location_t;
 class construct { // "Construct" as a general noun, not the verb.
