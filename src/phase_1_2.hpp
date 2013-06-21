@@ -78,14 +78,14 @@ public:
 			static char const	tri_source[] =	"='()!<>-",
 								tri_dest[] =	"#^[]|{}~";
 			if ( char const *sp = std::strchr( tri_source, c.c ) ) {
+				pass( { static_cast< std::uint8_t >( tri_dest[ sp - tri_source ] ), c } ); // pass trigraph state to client...
 				shift_reset();
-				pass( tri_dest[ sp - tri_source ] ); // pass trigraph state to client...
 				state = normal; // ... before resetting state
 				return;
 			} else if ( c.c == '/' ) {
+				shift_reset();
+				* shift_p ++ = { { static_cast< std::uint8_t >( '\\' ), c }, trigraph };
 				state = backslash;
-				shift( '\\' );
-				shift_buffer->s = trigraph;
 				return;
 			} else if ( c.c == '?' ) { // may be a trigraph preceded by a "?"
 				phase1_2::stage::pass( * shift_buffer ); // unshift only that "?"
@@ -133,16 +133,15 @@ public:
 				shift( c );
 				return;
 			} else if ( ucn_acc < 0x80 ) {
-				pass( ucn_acc );
+				pass( { static_cast< std::uint8_t >( ucn_acc ), shift_buffer[0] } );
 				
 			} else { // convert ucn_acc to UTF-8
 				unicode_remaining = 6; // number of UTF-8 trailer chars
 				for ( int shift = 31; ucn_acc >> shift == 0; shift -= 5 ) -- unicode_remaining;
 				
-				pass( std::uint8_t( 0x7F80 >> unicode_remaining
-								| std::uint64_t( ucn_acc ) >> unicode_remaining * 6 ) );
+				pass( { static_cast< std::uint8_t >( 0x7F80 >> unicode_remaining | ucn_acc >> unicode_remaining * 6 ), shift_buffer[0] } );
 				while ( unicode_remaining -- ) {
-					pass( std::uint8_t( 0x80 | ( ( ucn_acc >> unicode_remaining * 6 ) & 0x3F ) ) );
+					pass( { static_cast< std::uint8_t >( 0x80 | ( ( ucn_acc >> unicode_remaining * 6 ) & 0x3F ) ), shift_buffer[0] } );
 				}
 			}
 			state = normal;
