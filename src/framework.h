@@ -77,7 +77,7 @@ auto pass( oit it, v && val )
 	{ * it ++ = std::forward< v >( val ); }
 
 template< typename tag = struct tag, typename fn, typename v >
-typename util::mention< typename std::result_of< fn( v ) >::type >::type
+typename util::mention< typename std::result_of< fn &( v ) >::type >::type
 pass( fn && obj, v && val );
 
 template< bool en = false > // Dummy overload, may be disabled by using pass< tag >() call.
@@ -90,28 +90,33 @@ pass( fn && obj, v && val )
 	{ pass( std::forward< fn >( obj ).cont, std::forward< v >( val ) ); }
 
 template< typename fn, typename v >
-void pass( fn && obj, v && val, util::mention< std::tuple<> > )
+void pass( fn & obj, v && val, util::mention< std::tuple<> > )
 	{ obj( std::forward< v >( val ) ); }
 
 template< typename e, typename ... er, typename fn, typename v >
-void pass( fn && obj, v && val, util::mention< std::tuple< e, er ... > > ) {
+void pass( fn & obj, v && val, util::mention< std::tuple< e, er ... > > ) {
 	try {
-		pass( std::forward< fn >( obj ), std::forward< v >( val ), util::mention< std::tuple< er ... > >() );
+		pass( obj, std::forward< v >( val ), util::mention< std::tuple< er ... > >() );
 	} catch ( e & exc ) {
-		pass( std::forward< fn >( obj ), std::forward< e >( exc ) ); // May move e. Double exceptions may cause infinite recursion.
+		pass( obj, std::forward< e >( exc ) ); // May move e. Double exceptions may cause infinite recursion.
 	}
 }
 
+void finalize( util::poor_conversion const & ) {} // fallback overload, worse than derived-to-base conversion
+
 template< typename, typename fn, typename v >
-typename util::mention< typename std::result_of< fn( v ) >::type >::type
-pass( fn && obj, v && val )
-	{ pass( std::forward< fn >( obj ), std::forward< v >( val ), util::mention< typename parameter_exceptions< typename std::decay< fn >::type >::type >() ); }
+typename util::mention< typename std::result_of< fn &( v ) >::type >::type
+pass( fn && obj, v && val ) {
+	pass( obj, std::forward< v >( val ), util::mention< typename parameter_exceptions< typename std::decay< fn >::type >::type >() );
+	if ( ! std::is_reference< fn >::value ) finalize( obj );
+}
 
 template< typename obj, typename iit >
 void pass( iit first, iit last, obj && o ) {
 	for ( ; first != last; ++ first ) {
 		pass( o, * first );
 	}
+	if ( ! std::is_reference< obj >::value ) finalize( o );
 }
 
 template< typename exception_type, typename output_iterator, typename ... args >
@@ -206,8 +211,6 @@ struct stage_base< std::reference_wrapper< output > > {
 template< typename output_iterator, typename ... config_types >
 using stage = derived_stage< stage_base< output_iterator >, config_types ... >;
 
-void finalize( util::poor_conversion const & ) {} // fallback overload, worse than derived-to-base conversion
-
 template< typename s >
 typename std::enable_if< ! std::is_same< typename s::base, typename s::stage_base >::value >::type
 finalize( s &o ) {
@@ -271,7 +274,7 @@ struct instantiation : util::abc, construct {
 
 protected:
 	static construct source_link( std::shared_ptr< instantiation const > self, std::size_t index )
-		{ return { std::move( self ), index }; }
+		{ return { std::move( self ), index }; } // expose private constructor, but not as a mem-initializer
 	
 	static void advance( construct &c )
 		{ ++ c.location; }
@@ -286,7 +289,7 @@ private:
 	}
 	template< typename instantiation_derived, typename pile >
 	static typename std::enable_if< ! std::is_same< construct const &, decltype( std::declval< instantiation_derived >().component(0) ) >::value >::type
-	instantiate( std::shared_ptr< instantiation_derived > const &inst, pile && p ) {
+	instantiate( std::shared_ptr< instantiation_derived > const &inst, pile & p ) {
 		for ( std::size_t i = 0; i != inst->size(); ++ i ) {
 			p( instantiate_component( inst, i ) );
 		}
@@ -296,9 +299,12 @@ private:
 	friend typename std::decay< decltype( std::declval< instantiation_derived >().component(0) ) >::type
 	instantiate_component( std::shared_ptr< instantiation_derived > const &inst, std::size_t index )
 		{ return instantiation_derived::instantiate_component( inst, index ); }
+	
 	template< typename instantiation_derived, typename pile >
-	friend void instantiate( std::shared_ptr< instantiation_derived > const &inst, pile && p )
-		{ return instantiation_derived::instantiate( inst, std::forward< pile >( p ) ); }
+	friend void instantiate( std::shared_ptr< instantiation_derived > const &inst, pile && p ) {
+		instantiation_derived::instantiate( inst, p ); // do not forward; finalize usurps move semantics
+		if ( ! std::is_reference< pile >::value ) finalize( p );
+	}
 };
 
 template< typename instantiation_derived >
@@ -335,7 +341,7 @@ struct input_source : instantiation {
 	virtual void filter( std::function< void( std::uint8_t ) > ) const = 0; // Virtual-dispatches each char. Not for use in primary processing.
 	
 	template< typename input_source_derived, typename pile >
-	static void instantiate( std::shared_ptr< input_source_derived > inst, pile && p ) {
+	static void instantiate( std::shared_ptr< input_source_derived > inst, pile & p ) {
 		raw_char rc;
 		auto inst_p = inst.get();
 		rc.construct::operator = ( source_link( std::move( inst ), 0 ) );

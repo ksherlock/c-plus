@@ -412,9 +412,8 @@ class phase4
 			
 			state = entering;
 			
-			phase1_2< phase3< std::reference_wrapper< phase4 > > > nested( * this );
-			instantiate( std::make_shared< inclusion >( name, name_r ), nested );
-			finalize( nested ); // does not finalize *this, only phases 1-3
+			instantiate( std::make_shared< inclusion >( name, name_r ),
+				phase1_2< phase3< std::reference_wrapper< phase4 > > >( * this ) );
 			
 			state = entering;
 			
@@ -611,9 +610,8 @@ public:
 								throw error( in, "_Pragma operand must be a string (§16.9)." );
 							
 							tokens args;
-							phase3< std::back_insert_iterator< tokens >, std::false_type > tokenizer( get_config< phase3_config >(), args );
-							instantiate( std::make_shared< raw_text >( destringize( in.s ), in ), tokenizer );
-							finalize( tokenizer );
+							instantiate( std::make_shared< raw_text >( destringize( in.s ), in ),
+								phase3< std::back_insert_iterator< tokens >, std::false_type >( get_config< phase3_config >(), args ) );
 							auto pen = args.begin();
 							if ( pp_constants::skip_space( pen, args.end() ) == args.end() ) return;
 							

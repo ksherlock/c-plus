@@ -275,11 +275,9 @@ private:
 					s += '\"';
 					
 					acc_limiter.reset( 1 );
-					phase3< decltype( acc_it ), std::false_type > lexer( common.token_config, acc_it );
 					instantiate( std::make_shared< raw_text >( s,
 						instantiate_component( std::make_shared< macro_substitution >( std::move( * pen ++ ), arg.begin, arg.end ), 0 )
-					), lexer );
-					finalize( lexer );
+					), phase3< decltype( acc_it ), std::false_type >( common.token_config, acc_it ) );
 				} catch ( std::range_error & ) {
 					goto stringize_wrong_count;
 				}
@@ -337,11 +335,9 @@ private:
 				}
 				
 				try {
-					phase3< decltype( acc_it ), std::false_type > lexer( common.token_config, acc_it );
-					
 					acc_limiter.reset( 1 );
-					instantiate( std::make_shared< raw_text >( ends[lhs][ -1 ].s + begins[rhs][ 0 ].s, ends[lhs][ -1 ] ), lexer );
-					finalize( lexer );
+					instantiate( std::make_shared< raw_text >( ends[lhs][ -1 ].s + begins[rhs][ 0 ].s, ends[lhs][ -1 ] ), 
+						phase3< decltype( acc_it ), std::false_type >( common.token_config, acc_it ) );
 				} catch ( std::range_error & ) {
 					goto catenate_wrong_count;
 				}
