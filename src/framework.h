@@ -148,33 +148,33 @@ protected:
 	template< typename ... args >
 	derived_stage( args && ... a ) : derived_stage( tag(), std::tuple<>(), std::forward< args >( a ) ... ) {}
 	
-	template< typename ... acc_config, typename in_config, typename ... args >
+	template< typename ... acc_config, typename in_config, typename ... args > // if next argument is the next config object
 	derived_stage( typename std::enable_if< sizeof ... ( acc_config ) != sizeof ... ( config_types )
 			&& std::is_convertible< in_config, typename util::tuple_element< sizeof ... ( acc_config ), decltype( configs ) >::type >::value, tag >::type,
 		std::tuple< acc_config ... > && cacc, in_config && c, args && ... a )
 		: derived_stage( tag(), std::tuple_cat( std::move( cacc ), std::forward_as_tuple( std::forward< in_config >( c ) ) ), std::forward< args >( a ) ... ) {}
 	
-	template< typename ... acc_config, typename in_config, typename ... args >
+	template< typename ... acc_config, typename in_config, typename ... args > // if next argument isn't the next config object
 	derived_stage( typename std::enable_if< sizeof ... ( acc_config ) != sizeof ... ( config_types )
 			&& ! std::is_convertible< in_config, typename util::tuple_element< sizeof ... ( acc_config ), decltype( configs ) >::type >::value, tag >::type,
 		std::tuple< acc_config ... > && cacc, in_config && c, args && ... a )
 		: derived_stage( tag(), std::tuple_cat( std::move( cacc ), std::make_tuple( util::make_implicit_thunk(
-			std::bind( & base::template get_config< typename std::tuple_element< sizeof ... ( acc_config ), std::tuple< config_types ... > >::type const >, this ) ) ) ),
+			std::bind( & base::template get_config< typename std::tuple_element< sizeof ... ( acc_config ), std::tuple< config_types const ... > >::type >, this ) ) ) ),
 			std::forward< in_config >( c ), std::forward< args >( a ) ... ) {}
 
-	template< typename ... acc_config, typename ... args >
+	template< typename ... acc_config, typename ... args > // if configuration is complete
 	derived_stage( typename std::enable_if< sizeof ... ( acc_config ) == sizeof ... ( config_types ), tag >::type,
 		std::tuple< acc_config ... > && cacc, args && ... a )
 		: base( std::forward< args >( a ) ... ), configs( std::move( cacc ) ) {}
 	
 public:
-	template< typename client = typename std::tuple_element< 0, typename std::conditional< sizeof ... ( config_types ), std::tuple< config_types const ... >, std::tuple< void > >::type >::type >
-	typename std::enable_if< std::is_const< client >::value && util::tuple_index< client &, decltype( configs ) >::value != std::tuple_size< decltype( configs ) >::value, client & >::type
+	template< typename client = typename std::tuple_element< 0, std::tuple< config_types const ..., void > >::type >
+	typename std::enable_if< util::tuple_index< client &, decltype( configs ) >::value != ( sizeof ... ( config_types ) ), client & >::type
 	get_config() { return std::get< util::tuple_index< client &, decltype( configs ) >::value >( configs ); }
 	
 	template< typename client >
 	typename std::enable_if< ( typename util::mention< decltype( std::declval< base >().template get_config< client >() ) >::type(),
-		! std::is_const< client >::value || util::tuple_index< client &, decltype( configs ) >::value == std::tuple_size< decltype( configs ) >::value ), client & >::type
+		util::tuple_index< client &, decltype( configs ) >::value == ( sizeof ... ( config_types ) ) ), client & >::type
 	get_config() { return base::template get_config< client >(); }
 
 	template< typename v >
