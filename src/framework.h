@@ -194,11 +194,11 @@ public:
 		util::tuple_index< client &, decltype( configs ) >::value == ( sizeof ... ( config_types ) ) ), client & >::type
 	get_config() { return base::template get_config< client >(); }
 
-	template< typename v >
-	void pass( v && val ) { cplus::pass( * this, std::forward< v >( val ) ); }
+	template< pass_policy policy = pass_policy::mandatory, typename v >
+	void pass( v && val ) { cplus::pass< policy >( * this, std::forward< v >( val ) ); }
 
-	template< typename iit >
-	void pass( iit first, iit last ) { cplus::pass( first, last, * this ); }
+	template< pass_policy policy = pass_policy::mandatory, typename iit >
+	void pass( iit first, iit last ) { cplus::pass< policy >( first, last, * this ); }
 
 	template< typename exception_type, typename ... args >
 	void pass_or_throw( args && ... a )
