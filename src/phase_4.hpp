@@ -125,10 +125,8 @@ class phase4
 			preserve_defined_operator = macros.insert( { pp_constants::defined_operator.s, defined_preserver } ).second;
 		}
 		
-		macro_context< macro_filter< std::back_insert_iterator< tokens > > >
-			local( static_cast< macro_context_info & >( * this ), ret );
-		pass( std::make_move_iterator( first ), std::make_move_iterator( last ), local );
-		local.flush();
+		pass( std::make_move_iterator( first ), std::make_move_iterator( last ),
+			autoconfigured_pile< macro_context, macro_filter >( std::back_inserter( ret ), static_cast< macro_context_info & >( * this ) ) );
 		
 		if ( preserve_defined_operator ) macros.erase( pp_constants::defined_operator.s ); // #undef defined
 		
@@ -413,7 +411,7 @@ class phase4
 			state = entering;
 			
 			instantiate( std::make_shared< inclusion >( name, name_r ),
-				phase1_2< phase3< std::reference_wrapper< phase4 > > >( * this ) );
+				autoconfigured_pile< phase1_2, phase3 >( std::ref( * this ) ) );
 			
 			state = entering;
 			
@@ -611,7 +609,7 @@ public:
 							
 							tokens args;
 							instantiate( std::make_shared< raw_text >( destringize( in.s ), in ),
-								phase3< std::back_insert_iterator< tokens > >( get_config< phase3_config >(), args ) );
+								autoconfigured_pile< phase3 >( std::back_inserter( args ), get_config< phase3_config >() ) );
 							auto pen = args.begin();
 							if ( pp_constants::skip_space( pen, args.end() ) == args.end() ) return;
 							

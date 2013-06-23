@@ -277,7 +277,7 @@ private:
 					acc_limiter.reset( 1 );
 					instantiate( std::make_shared< raw_text >( s,
 						instantiate_component( std::make_shared< macro_substitution >( std::move( * pen ++ ), arg.begin, arg.end ), 0 )
-					), phase3< decltype( acc_it ) >( common.token_config, acc_it ) );
+					), autoconfigured_pile< phase3 >( acc_it, common.token_config ) );
 				} catch ( std::range_error & ) {
 					goto stringize_wrong_count;
 				}
@@ -337,7 +337,7 @@ private:
 				try {
 					acc_limiter.reset( 1 );
 					instantiate( std::make_shared< raw_text >( ends[lhs][ -1 ].s + begins[rhs][ 0 ].s, ends[lhs][ -1 ] ), 
-						phase3< decltype( acc_it ) >( common.token_config, acc_it ) );
+						autoconfigured_pile< phase3 >( acc_it, common.token_config ) );
 				} catch ( std::range_error & ) {
 					goto catenate_wrong_count;
 				}
