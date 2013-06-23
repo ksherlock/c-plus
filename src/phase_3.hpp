@@ -91,7 +91,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 	
 	void general_path( raw_char const &in, pp_char_source in_s ) {
 		char32_t &c = utf8.result;
-		if ( state == block_comment || state == line_comment || state == header_name && ( token.type == block_comment || token.type == space_run ) ) {
+		if ( state == block_comment || state == line_comment || ( state == header_name && ( token.type == block_comment || token.type == space_run ) ) ) {
 			c = in.c;
 		} else {
 			try { // may be better to throw a separate misc token for these?
@@ -463,8 +463,8 @@ class phase3 : public stage< output_iterator, phase3_config >,
 						token.type = state = ws; // state_after_space is already header_name
 						continue;
 					}
-				} else if ( input_buffer[0].c == '<' && c == '>'
-						 || input_buffer[0].c == '\"' && c == '\"' ) {
+				} else if ( ( input_buffer[0].c == '<' && c == '>' )
+						 || ( input_buffer[0].c == '\"' && c == '\"' ) ) {
 					token.type = state_after_space = ws;
 				}
 				shift( in );
@@ -576,7 +576,7 @@ public:
 		{ general_path( in, in.s ); }
 	
 	void flush() {
-		if ( state == block_comment || state == header_name && ( token.type == block_comment || token.type == space_run ) )
+		if ( state == block_comment || ( state == header_name && ( token.type == block_comment || token.type == space_run ) ) )
 			throw error( token, "Unterminated comment." );
 		if ( state == string_lit || state == char_lit || state == rstring )
 			throw error( token, "Unterminated literal." );

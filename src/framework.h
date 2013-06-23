@@ -347,7 +347,7 @@ struct error : std::runtime_error {
 struct raw_char : construct {
 	std::uint8_t c;
 	
-	raw_char( std::uint8_t in_c = {}, construct const &in_p = {} ) : c( in_c ), construct( in_p ) {}
+	raw_char( std::uint8_t in_c = {}, construct in_p = {} ) : construct( std::move( in_p ) ), c( in_c ) {}
 };
 
 // Abstract base for user input.
