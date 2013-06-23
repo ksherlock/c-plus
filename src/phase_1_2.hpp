@@ -44,7 +44,8 @@ class phase1_2 : public stage< output_iterator, phase1_2_config >,
 	
 	void pass( raw_char const &c ) try {
 		inhibit_ucn = false;
-		phase1_2::stage::pass( pp_char{ c, static_cast< pp_char_source >( state ) } );
+		if ( state == normal ) phase1_2::stage::pass( c );
+		else phase1_2::stage::pass( pp_char{ c, static_cast< pp_char_source >( state ) } );
 	} catch ( raw_string_notification &n ) { // follows quote, which is never shifted
 		state = n.entering? (int) rstring : normal;
 	}

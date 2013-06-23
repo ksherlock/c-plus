@@ -89,7 +89,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 		token.type = state = state_after_space;
 	}
 	
-	void general_path( pp_char const &in ) {
+	void general_path( raw_char const &in, pp_char_source in_s ) {
 		char32_t &c = utf8.result;
 		if ( state == block_comment || state == line_comment || state == header_name && ( token.type == block_comment || token.type == space_run ) ) {
 			c = in.c;
@@ -101,7 +101,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 					"encode the desired Unicode character and the pair will be generated. "
 					"Otherwise, try a hexadecimal escape sequence \"\\xDnnn\"." );
 				else if ( state != rstring && state != string_lit && state != char_lit && state != escape ) {
-					if ( in.s == pp_char_source::ucn && char_in_set( char_set::basic_source, c ) ) {
+					if ( in_s == pp_char_source::ucn && char_in_set( char_set::basic_source, c ) ) {
 						this->template pass_or_throw< error >( in, "Please do not encode basic source text "
 											"in universal-character-names (§2.3/2)." );
 					} else if ( ( c <= 0x1F && ! char_in_set( char_set::space, c ) )
@@ -347,7 +347,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 		case block_comment:
 			if ( this->get_config().preserve_space ) token.s += c; // no UTF-8 decoding in comments
 			
-			if ( ! input_buffer.empty() && c == '/' && in.s != pp_char_source::ucn ) {
+			if ( ! input_buffer.empty() && c == '/' && in_s != pp_char_source::ucn ) {
 				/*	If we got here from /​* being a pseudo punctuator, looking for #, then
 					this is still the beginning of the line, and continue looking for a #. */
 				state = token.type == directive? (int) after_newline : space_run;
@@ -355,11 +355,11 @@ class phase3 : public stage< output_iterator, phase3_config >,
 			}
 			input_buffer.clear();
 			
-			if ( c == '*' && in.s != pp_char_source::ucn ) shift( in ); // advance to next sub-state
+			if ( c == '*' && in_s != pp_char_source::ucn ) shift( in ); // advance to next sub-state
 			return;
 
 		case line_comment:
-			if ( c == '\n' && in.s != pp_char_source::ucn ) {
+			if ( c == '\n' && in_s != pp_char_source::ucn ) {
 				token.type = state = ws;
 				continue;
 			} else {
@@ -407,7 +407,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 		
 		case string_lit:
 		case char_lit:
-			if ( in.s == pp_char_source::ucn && char_in_set( char_set::basic_source, c ) ) {
+			if ( in_s == pp_char_source::ucn && char_in_set( char_set::basic_source, c ) ) {
 				goto unmap_ucn; // Basic source UCNs are special, and must be processed like escapes.
 			}
 			unshift( in );
@@ -422,7 +422,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 		// Don't map escape sequences yet, as that depends on execution charset.
 		case escape:
 			// But do *unmap* UCNs, since eg "\$" = "\\u0024" greedily matches the backslash escape first.
-			if ( in.s == pp_char_source::ucn ) throw error( token, "ICE: failed to inhibit UCN conversion." );
+			if ( in_s == pp_char_source::ucn ) throw error( token, "ICE: failed to inhibit UCN conversion." );
 			if ( ! char_in_set( char_set::basic_source, c ) ) {
 			unmap_ucn:
 				int digits = c >= 0x10000? 8 : 4;
@@ -519,14 +519,14 @@ class phase3 : public stage< output_iterator, phase3_config >,
 				}
 			
 			} else if ( token.type == space_run ) {
-				if ( in.s != pp_char_source::ucn ) token.type = block_comment;
+				if ( in_s != pp_char_source::ucn ) token.type = block_comment;
 				token.s += c;
 				
 			} else if ( token.type == block_comment ) {
-				if ( token.s.back() == '*' && c == '/' && in.s != pp_char_source::ucn ) {
+				if ( token.s.back() == '*' && c == '/' && in_s != pp_char_source::ucn ) {
 					token.type = ws;
 				
-				} else if ( in.s == pp_char_source::ucn ) {
+				} else if ( in_s == pp_char_source::ucn ) {
 					token.type = space_run;
 				}
 				token.s += c;
@@ -557,8 +557,8 @@ public:
 		: phase3::stage( std::forward< args >( a ) ... ),
 		state( initial ), state_after_space( after_newline ), in_directive( false ) {}
 	
-	void operator() ( pp_char const &in ) {
-		if ( in.s == pp_char_source::normal && char_in_set( * char_set::safe_chars[ state ], in.c ) ) {
+	void operator() ( raw_char const &in ) {
+		if ( char_in_set( * char_set::safe_chars[ state ], in.c ) ) {
 			//++ fast_dispatch;
 			input_buffer.clear();
 			if ( state < space_run || this->get_config().preserve_space ) {
@@ -567,9 +567,12 @@ public:
 		} else {
 			//++ slow_dispatch;
 			//++ slow_histo[ state ];
-			general_path( in );
+			general_path( in, pp_char_source::normal );
 		}
 	}
+	
+	void operator() ( pp_char const &in )
+		{ general_path( in, in.s ); }
 	
 	void flush() {
 		if ( state == block_comment || state == header_name && ( token.type == block_comment || token.type == space_run ) )
@@ -577,7 +580,7 @@ public:
 		if ( state == string_lit || state == char_lit || state == rstring )
 			throw error( token, "Unterminated literal." );
 		
-		(*this)( { '\n' } );
+		(*this)( '\n' );
 		
 		if ( state != ws && state != after_newline && state != space_run )
 			throw error( token, "ICE: Phase 3 terminated in unexpected state." );
