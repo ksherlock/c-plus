@@ -42,7 +42,7 @@ struct config_pragma_base : config_base {
 struct propagate_pragma {}; // exception indicates pragma handler is defaulting
 
 struct pp_char : raw_char {
-	pp_char( raw_char const &in_c = {}, pp_char_source in_s = {} ) : raw_char( in_c ), s( in_s ) {}
+	pp_char( raw_char in_c = {}, pp_char_source in_s = {} ) : raw_char( std::move( in_c ) ), s( in_s ) {}
 	pp_char_source s;
 };
 
@@ -63,11 +63,13 @@ struct phase1_2_config : config_pragma_base {
 // Output format for Phases 3-4
 CPLUS_IMPORTABLE_ENUM( token_type, ws, id, num, punct, string_lit, char_lit, directive, header_name, misc )
 
-struct raw_string_notification { bool entering; }; // These exceptions are thrown unless
-struct inhibit_ucn_notification {}; // the second template arg to stage3 is set to false.
-
 struct phase3_config : config_pragma_base {
 	mutable string_pool stream_pool;
+	
+	mutable enum class decode_state {
+		normal, raw, escape
+	} decode_state_cur;
+	
 	bool preserve_space;
 	
 	pragma_handler_list pragma_handlers() {
@@ -79,7 +81,7 @@ struct phase3_config : config_pragma_base {
 		} } };
 		return ret;
 	}
-	phase3_config() : stream_pool( "stream" ), preserve_space( false ) {}
+	phase3_config() : stream_pool( "stream" ), decode_state_cur( decode_state::normal ), preserve_space( false ) {}
 };
 
 struct macro_replacement : instantiation { // source of tokens from replacement list

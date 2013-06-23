@@ -611,7 +611,7 @@ public:
 							
 							tokens args;
 							instantiate( std::make_shared< raw_text >( destringize( in.s ), in ),
-								phase3< std::back_insert_iterator< tokens >, std::false_type >( get_config< phase3_config >(), args ) );
+								phase3< std::back_insert_iterator< tokens > >( get_config< phase3_config >(), args ) );
 							auto pen = args.begin();
 							if ( pp_constants::skip_space( pen, args.end() ) == args.end() ) return;
 							
