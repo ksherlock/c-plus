@@ -71,28 +71,31 @@ struct parameter_exceptions< ftor, typename util::mention< typename ftor::parame
 	{ typedef typename ftor::parameter_exceptions type; };
 
 // pass() puts input into a stage (functor or iterator) or its succeeding stages, catches thrown exceptions and feeds them back in.
-template< typename tag = struct tag, typename oit, typename v >
+enum class pass_policy { mandatory, optional, enable_if };
+
+template< pass_policy = {}, typename oit, typename v >
 auto pass( oit it, v && val )
 	-> typename util::mention< decltype( * it ++ = std::forward< v >( val ) ) >::type
 	{ * it ++ = std::forward< v >( val ); }
 
-template< typename tag = struct tag, typename fn, typename v >
+template< pass_policy = {}, typename fn, typename v >
 typename util::mention< typename std::result_of< fn &( v ) >::type >::type
 pass( fn && obj, v && val );
 
-template< bool en = false > // Dummy overload, may be disabled by using pass< tag >() call.
-struct bad_pass *pass( util::poor_conversion, util::poor_conversion ) { static_assert( en, "invalid pass argument" ); return nullptr; }
+template< pass_policy policy = pass_policy::mandatory >
+typename std::enable_if< policy != pass_policy::enable_if, pass_policy >::type // to see overload resolution errors, specify enable_if.
+pass( util::poor_conversion, util::poor_conversion ) { static_assert( policy == pass_policy::optional, "invalid pass argument" ); return pass_policy::optional; }
 
-template< typename tag = struct tag, typename fn, typename v > // Qualified-id avoids ADL and prevents recursion, tag enables ADL and recursion.
-typename std::enable_if< std::is_same< bad_pass *, decltype( cplus::pass( std::declval< fn >(), std::declval< v >() ) ) >::value,
-	typename util::mention< decltype( pass< tag >( std::declval< fn >().cont, std::declval< v >() ) ) >::type >::type
+template< pass_policy policy = pass_policy::mandatory, typename fn, typename v > // Qualified-id avoids ADL and prevents recursion, tag enables ADL and recursion.
+typename std::enable_if< std::is_same< decltype( cplus::pass< pass_policy::optional >( std::declval< fn >(), std::declval< v >() ) ), pass_policy >::value,
+	typename util::mention< decltype( pass< pass_policy::enable_if >( std::declval< fn >().cont, std::declval< v >() ) ) >::type >::type
 pass( fn && obj, v && val )
-	{ pass( std::forward< fn >( obj ).cont, std::forward< v >( val ) ); }
+	{ pass< policy >( std::forward< fn >( obj ).cont, std::forward< v >( val ) ); }
 
-template< typename tag = struct tag, typename w, typename v >
+template< pass_policy policy = pass_policy::mandatory, typename w, typename v >
 typename util::mention< decltype( pass( std::declval< w & >(), std::declval< v >() ) ) >::type
 pass( std::reference_wrapper< w > wrap, v && val )
-	{ pass< tag >( wrap.get(), std::forward< v >( val ) ); }
+	{ pass< policy >( wrap.get(), std::forward< v >( val ) ); }
 
 template< typename fn, typename v >
 void pass( fn & obj, v && val, util::mention< std::tuple<> > )
@@ -109,23 +112,37 @@ void pass( fn & obj, v && val, util::mention< std::tuple< e, er ... > > ) {
 
 void finalize( util::poor_conversion const & ) {} // fallback overload, worse than derived-to-base conversion
 
-template< typename, typename fn, typename v >
+template< pass_policy, typename fn, typename v >
 typename util::mention< typename std::result_of< fn &( v ) >::type >::type
 pass( fn && obj, v && val ) {
 	pass( obj, std::forward< v >( val ), util::mention< typename parameter_exceptions< typename std::decay< fn >::type >::type >() );
 	if ( ! std::is_reference< fn >::value ) finalize( obj );
 }
 
-template< typename obj, typename iit >
-void pass( iit first, iit last, obj && o ) {
+template< pass_policy policy = pass_policy::mandatory, typename obj, typename iit >
+auto
+#if __GNUC__
+	pass_some
+#else
+	pass
+#endif
+			( iit first, iit last, obj && o )
+	-> typename util::mention< decltype( pass< policy >( o, * first ) ) >::type {
 	for ( ; first != last; ++ first ) {
-		pass( o, * first );
+		pass< policy >( o, * first );
 	}
 	if ( ! std::is_reference< obj >::value ) finalize( o );
 }
 
+#if __GNUC__
+template< pass_policy policy = pass_policy::mandatory, typename obj, typename iit >
+typename util::mention< decltype( pass_some< policy >( std::declval< iit >(), std::declval< iit >(), std::declval< obj >() ) ) >::type
+pass( iit first, iit last, obj && o )
+	{ return pass_some( first, last, std::forward< obj >( o ) ); }
+#endif
+
 template< typename exception_type, typename obj, typename ... args >
-typename util::mention< decltype( pass< tag >( std::declval< obj >(), std::declval< exception_type >() ) ) >::type
+typename util::mention< decltype( pass< pass_policy::enable_if >( std::declval< obj >(), std::declval< exception_type >() ) ) >::type
 pass_or_throw( obj && o, args && ... a )
 	{ pass( std::forward< obj >( o ), exception_type{ std::forward< args >( a ) ... } ); }
 
