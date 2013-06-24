@@ -23,6 +23,8 @@ struct macro_context_info { // information that determines how macros are expand
 		token filename; // may be set by #line
 		std::int32_t line_displacement; // controlled by #line directive
 	} presumed;
+	
+	mutable std::vector< token /*const - GCC workaround */ > callers;
 };
 
 template< typename output_iterator > // either another macro_context (via std::function) or a macro_filter
@@ -30,7 +32,6 @@ class macro_context : public stage< output_iterator > {
 	typedef macro_context_info::name_map name_map;
 	macro_context_info const &common; // points to sibling subobject of phase4 next to root context
 
-	typedef std::vector< token /*const - GCC workaround */ > call_stack;
 	name_map::const_pointer definition; // function-like macro awaiting call
 protected:
 	tokens input; // buffered arguments or scratch storage
@@ -42,9 +43,8 @@ public:
 		: macro_context::stage( std::forward< args >( a ) ... ), common( common_info ),
 		definition( nullptr ), input{ pp_constants::placemarker }, paren_depth( 0 ) {}
 	
-	// flush and operator() accept list of callers as rvalue, return it unchanged
-	void flush( call_stack &&callers = call_stack() ) {
-		replace_object_completely( callers );
+	void flush() {
+		replace_object_completely();
 		if ( paren_depth != 0 ) {
 			throw error( input[ input.front().type == token_type::ws ], "Unterminated macro invokation." );
 		}
@@ -54,22 +54,22 @@ public:
 		definition = nullptr;
 	}
 	
-	void operator() ( token const &in, call_stack &&callers = call_stack() ) // copy input if not called with std::move
-		{ return (*this) ( util::val( in ), std::move( callers ) ); }
+	void operator() ( token const &in ) // copy input if not called with std::move
+		{ return (*this) ( util::val( in ) ); }
 	
 	/*	operator() trims whitespace, buffers input, and calls macros. It doesn't trim recursion stops.
 		replace() sends results back to it by co-recursion, which implements rescanning and further replacement. */
-	void operator() ( token &&in, call_stack &&callers = call_stack() ) {
+	void operator() ( token &&in ) {
 		bool stop_recursion = false; // perform this check before argument gets moved
 		if ( in.type == token_type::id ) {
-			stop_recursion = std::find( callers.begin(), callers.end(), in ) != callers.end();
+			stop_recursion = std::find( common.callers.begin(), common.callers.end(), in ) != common.callers.end();
 		}
 		if ( paren_depth == 0 ) {
 			if ( definition ) {
 				if ( in == pp_constants::recursion_stop ) {
 					definition = nullptr; // Abort macro call. Recursion_stop token will be passed through.
 				}
-				replace_object_completely( callers ); // Call any object-like macro. May set definition to a function-like macro.
+				replace_object_completely(); // Call any object-like macro. May set definition to a function-like macro.
 				
 				if ( definition && is_function_like( * definition ) && in == pp_constants::lparen ) { // function call
 					goto got_lparen; // Keep open paren, just for consistency.
@@ -88,7 +88,7 @@ public:
 					definition = &* def;
 					input.push_back( std::move( in ) ); // Remember name in case macro isn't called.
 				} else {
-					flush( std::move( callers ) ); // Clear any uncalled function, or just flush whitespace. No object macro here.
+					flush(); // Clear any uncalled function, or just flush whitespace. No object macro here.
 					this->pass( std::move( in ) ); // Common case: not in any part of an invokation, pass through.
 				}
 			}
@@ -100,7 +100,7 @@ public:
 			} else if ( in == pp_constants::rparen ) {
 				input.push_back( std::move( in ) );
 				-- paren_depth;
-				if ( paren_depth == 0 ) replace( callers );
+				if ( paren_depth == 0 ) replace();
 			} else if ( in == pp_constants::recursion_stop && input.back() == pp_constants::recursion_stop ) {
 				// trim consecutive recursion stops
 			} else
@@ -115,7 +115,7 @@ public:
 			}
 		}
 		if ( stop_recursion ) {
-			return (*this)( pp_constants::recursion_stop, std::move( callers ) ); // tail recurse, insert artificial input
+			return (*this)( pp_constants::recursion_stop ); // tail recurse, insert artificial input
 		}
 	}
 	
@@ -139,10 +139,10 @@ private:
 	static bool is_function_like( name_map::const_reference definition )
 		{ return definition.second[0].type != token_type::ws; }
 	
-	void replace_object_completely( call_stack &callers )
-		{ while ( definition && ! is_function_like( * definition ) ) replace( callers ); }
+	void replace_object_completely()
+		{ while ( definition && ! is_function_like( * definition ) ) replace(); }
 	
-	void replace( call_stack &callers ) {
+	void replace() {
 		struct arg_info {
 			tokens::const_iterator begin, end;
 			
@@ -156,17 +156,17 @@ private:
 		std::vector< arg_info > args_info; // size = param count
 		tokens::iterator input_pen = input.begin();
 		bool leading_space = skip_space( input_pen );
-		callers.push_back( std::move( * input_pen ) ); // Register in call stack before rescanning.
+		common.callers.push_back( std::move( * input_pen ) ); // Register in call stack before rescanning.
 		if ( function_like ) skip_space( ++ input_pen ); // ignore space between name and paren
 		
 		// save macro name and arguments, or special replacement list, in persistent instantiation object
 		auto inst = definition->first == pp_constants::line_macro.s || definition->first == pp_constants::file_macro.s?
-			std::make_shared< macro_replacement >( callers.front(), tokens{ pp_constants::space,
+			std::make_shared< macro_replacement >( common.callers.front(), tokens{ pp_constants::space,
 				definition->first == pp_constants::line_macro.s? // line number has no location as it is generated ex nihilo
-				token{ token_type::num, string{ std::to_string( line_number( callers.front() ) ).c_str(), common.token_config.stream_pool } }
+				token{ token_type::num, string{ std::to_string( line_number( common.callers.front() ) ).c_str(), common.token_config.stream_pool } }
 				: common.presumed.filename
 			} )
-		: std::make_shared< macro_replacement >( callers.front(), definition->second,
+		: std::make_shared< macro_replacement >( common.callers.front(), definition->second,
 			tokens{ std::move_iterator< tokens::iterator >{ input_pen }, std::move_iterator< tokens::iterator >{ input.end() } } );
 		
 		input.erase( input.begin() + leading_space, input.end() ); // All input has been moved from except space acc.
@@ -202,7 +202,7 @@ private:
 		}
 		
 		// obtain iterator access to self
-		auto local( std::bind( ref( * this ), std::placeholders::_1, util::rref( callers ) ) );
+		auto & local = * this;
 		
 		// Use a local copy of phase 3 to generate tokens one at a time as intermediate results.
 		token acc[ 2 ]; // [0] is LHS, [1] is RHS from stringize or LHS recursion stop
@@ -364,26 +364,24 @@ private:
 				if ( param == def.begin() + args_info.size() ) {
 					local( std::move( acc[ 0 ] ) ); // common case - copy from replacement list to output
 				} else {
-					auto caller_self = callers.back();
-					callers.pop_back(); // evaluate argument in caller's context, i.e. current name is not recursion-stopped
-					
-					macro_context< std::function< void( token && ) > > nested( common, [&]( token &&in ) {
-						callers.push_back( caller_self ); // restore current context for rescanning
-						local( std::move( in ) ); // local references callers
-						callers.pop_back();
-					} );
+					auto caller_self = common.callers.back();
+					common.callers.pop_back(); // evaluate argument in caller's context, i.e. current name is not recursion-stopped
 					
 					arg_info arg = args_info[ param - def.begin() ];
 					instantiate( std::make_shared< macro_substitution >( std::move( acc[ 0 ] ), arg.begin, arg.end ),
-						std::bind( std::ref( nested ), std::placeholders::_1, util::rref( callers ) ) );
-					nested.flush( std::move( callers ) );
+						autoconfigured_pile< macro_context >( std::function< void( token && ) >( [&]( token &&in ) {
+							common.callers.push_back( caller_self ); // restore current context for rescanning
+							local( std::move( in ) );
+							common.callers.pop_back();
+						} ), common )
+					 );
 					
-					callers.push_back( caller_self );
+					common.callers.push_back( caller_self );
 				}
 			}
 		}
 		pass( std::make_move_iterator( acc ), std::make_move_iterator( acc_limiter.base ), local );
-		callers.pop_back();
+		common.callers.pop_back();
 	}
 };
 
