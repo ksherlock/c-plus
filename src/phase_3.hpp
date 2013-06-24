@@ -217,7 +217,6 @@ class phase3 : public stage< output_iterator, phase3_config >,
 						state = rstring;
 						token.type = string_lit;
 						rstring_term_start = std::string::npos;
-						this->get_config().decode_state_cur = phase3_config::decode_state::raw;
 						return;
 					} else if ( token.type != string_lit ) { // 
 						unshift( in );
@@ -392,7 +391,6 @@ class phase3 : public stage< output_iterator, phase3_config >,
 				std::uint8_t begin_seq_char = token.s[ token.s.find( '"' ) + 1 + rstring_seq_len ];
 				if ( c == '"' && begin_seq_char == '(' ) {
 					state = ud_suffix;
-					this->get_config().decode_state_cur = phase3_config::decode_state::normal;
 					return;
 					
 				} else if ( begin_seq_char != c ) {
@@ -414,14 +412,13 @@ class phase3 : public stage< output_iterator, phase3_config >,
 			switch ( c ) {
 			case '\"':	if ( state == string_lit ) state = ud_suffix; return;
 			case '\'':	if ( state == char_lit ) state = ud_suffix; return;
-			case '\\':	state = escape; this->get_config().decode_state_cur = phase3_config::decode_state::escape; return;
+			case '\\':	state = escape; return;
 			case '\n':	throw error( token, "Use \\n instead of embedding a newline in a literal (§2.14.5)." );
 			default:	return;
 			}
 		
 		// Don't map escape sequences yet, as that depends on execution charset.
 		case escape:
-			this->get_config().decode_state_cur = phase3_config::decode_state::normal;
 			// But do *unmap* UCNs, since eg "\$" = "\\u0024" greedily matches the backslash escape first.
 			if ( in_s == pp_char_source::ucn ) throw error( token, "ICE: failed to inhibit UCN conversion." );
 			if ( ! char_in_set( char_set::basic_source, c ) ) {
@@ -574,6 +571,13 @@ public:
 	
 	void operator() ( pp_char const &in )
 		{ general_path( in, in.s ); }
+	
+	void operator() ( phase3_decode_state & s ) { // s must be initialized to "normal" or caller won't handle absence of this stage.
+		switch ( state ) {
+			case rstring: s = phase3_decode_state::raw; break;
+			case escape: s = phase3_decode_state::escape; break;
+		}
+	}
 	
 	void flush() {
 		if ( state == block_comment || ( state == header_name && ( token.type == block_comment || token.type == space_run ) ) )

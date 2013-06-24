@@ -15,6 +15,8 @@ template< typename output_iterator >
 class phase1_2 : public stage< output_iterator, phase1_2_config, phase3_config >,
 	pp_char_source_import_base {
 	
+	using phase1_2::stage::pass;
+	
 	enum states { tri1 = pp_char_source_last, backslash, msdos };
 	int state;
 	
@@ -34,7 +36,11 @@ class phase1_2 : public stage< output_iterator, phase1_2_config, phase3_config >
 		shift_reset();
 	}
 	
-	using phase1_2::stage::pass;
+	phase3_decode_state get_decode_state() {
+		phase3_decode_state ret = {};
+		this->template pass< pass_policy::optional >( ret );
+		return ret;
+	}
 	
 public:
 	template< typename ... args >
@@ -50,9 +56,9 @@ public:
 		case normal:
 			switch ( c.c ) {
 			case '?':	if ( this->get_config().disable_trigraphs
-							|| this->template get_config< phase3_config >().decode_state_cur == phase3_config::decode_state::raw ) goto normal;
+							|| get_decode_state() == phase3_decode_state::raw ) goto normal;
 						state = tri1;		shift( c );		return;
-			case '\\':	if ( this->template get_config< phase3_config >().decode_state_cur == phase3_config::decode_state::raw ) goto normal;
+			case '\\':	if ( get_decode_state() == phase3_decode_state::raw ) goto normal;
 						state = backslash;	shift( c );		return;
 			default: normal:				pass( c );		return;
 			}
@@ -89,7 +95,7 @@ public:
 		case backslash:
 			switch ( c.c ) {
 			case 'u':
-			case 'U':	if ( this->template get_config< phase3_config >().decode_state_cur == phase3_config::decode_state::escape ) {
+			case 'U':	if ( get_decode_state() == phase3_decode_state::escape ) {
 						state = normal;		unshift();		continue;
 						}
 						ucn_acc = 0;

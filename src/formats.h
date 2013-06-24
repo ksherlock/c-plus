@@ -63,12 +63,10 @@ struct phase1_2_config : config_pragma_base {
 // Output format for Phases 3-4
 CPLUS_IMPORTABLE_ENUM( token_type, ws, id, num, punct, string_lit, char_lit, directive, header_name, misc )
 
+enum class phase3_decode_state { normal, raw, escape };
+
 struct phase3_config : config_pragma_base {
 	mutable string_pool stream_pool;
-	
-	mutable enum class decode_state {
-		normal, raw, escape
-	} decode_state_cur;
 	
 	bool preserve_space;
 	
@@ -81,7 +79,7 @@ struct phase3_config : config_pragma_base {
 		} } };
 		return ret;
 	}
-	phase3_config() : stream_pool( "stream" ), decode_state_cur( decode_state::normal ), preserve_space( false ) {}
+	phase3_config() : stream_pool( "stream" ), preserve_space( false ) {}
 };
 
 struct macro_replacement : instantiation { // source of tokens from replacement list
