@@ -381,6 +381,7 @@ private:
 			}
 		}
 		pass( std::make_move_iterator( acc ), std::make_move_iterator( acc_limiter.base ), local );
+		replace_object_completely();
 		common.callers.pop_back();
 	}
 };
