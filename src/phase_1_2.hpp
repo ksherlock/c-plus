@@ -12,7 +12,7 @@
 namespace cplus {
 
 template< typename output_iterator >
-class phase1_2 : public stage< output_iterator, phase1_2_config, phase3_config >,
+class phase1_2 : public stage< output_iterator, phase1_2_config >,
 	pp_char_source_import_base {
 	
 	using phase1_2::stage::pass;
