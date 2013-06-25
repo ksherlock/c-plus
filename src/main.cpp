@@ -76,7 +76,7 @@ int main( int argc, char *argv[] ) {
 	
 	int count = 0;
 	
-	auto && pile = cplus::autoconfigured_pile< cplus::phase1_2, cplus::phase3, cplus::phase4, cplus::pragma_filter > (
+	auto && pile = cplus::pile< cplus::phase1_2, cplus::phase3, cplus::phase4, cplus::pragma_filter > (
 		cplus::util::amalgamate(
 			[&count]( cplus::token &&token ){ std::fwrite( token.s.c_str(), 1, token.s.size(), stdout ); std::fwrite( "·", 1, std::strlen( "·" ), stdout ); },
 			[]( cplus::error && err ) {

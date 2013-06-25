@@ -277,7 +277,7 @@ private:
 					acc_limiter.reset( 1 );
 					instantiate( std::make_shared< raw_text >( s,
 						instantiate_component( std::make_shared< macro_substitution >( std::move( * pen ++ ), arg.begin, arg.end ), 0 )
-					), autoconfigured_pile< phase3 >( acc_it, common.token_config ) );
+					), pile< phase3 >( common.token_config, acc_it ) );
 				} catch ( std::range_error & ) {
 					goto stringize_wrong_count;
 				}
@@ -337,7 +337,7 @@ private:
 				try {
 					acc_limiter.reset( 1 );
 					instantiate( std::make_shared< raw_text >( ends[lhs][ -1 ].s + begins[rhs][ 0 ].s, ends[lhs][ -1 ] ), 
-						autoconfigured_pile< phase3 >( acc_it, common.token_config ) );
+						pile< phase3 >( common.token_config, acc_it ) );
 				} catch ( std::range_error & ) {
 					goto catenate_wrong_count;
 				}
@@ -369,11 +369,11 @@ private:
 					
 					arg_info arg = args_info[ param - def.begin() ];
 					instantiate( std::make_shared< macro_substitution >( std::move( acc[ 0 ] ), arg.begin, arg.end ),
-						autoconfigured_pile< macro_context >( std::function< void( token && ) >( [&]( token &&in ) {
+						pile< macro_context >( common, std::function< void( token && ) >( [&]( token &&in ) {
 							common.callers.push_back( caller_self ); // restore current context for rescanning
 							local( std::move( in ) );
 							common.callers.pop_back();
-						} ), common )
+						} ) )
 					 );
 					
 					common.callers.push_back( caller_self );

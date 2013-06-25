@@ -440,10 +440,10 @@ template< typename cont, template< typename ... > class stage, template< typenam
 struct stack_stages< cont, stage, rem ... >
 	{ typedef stage< typename stack_stages< cont, rem ... >::type > type; };
 
-template< template< typename ... > class ... stages, typename cont, typename ... aux >
-typename stack_stages< cont, stages ... >::type
-autoconfigured_pile( cont && c, aux && ... a )
-	{ return { std::forward< aux >( a ) ..., std::forward< cont >( c ) }; }
+template< template< typename ... > class ... stages, typename ... args >
+typename stack_stages< typename std::tuple_element< sizeof ... ( args ) - 1, std::tuple< args ... > >::type, stages ... >::type
+pile( args && ... a )
+	{ return { std::forward< args >( a ) ... }; }
 
 }
 
