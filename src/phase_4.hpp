@@ -29,10 +29,11 @@ inline std::string destringize( std::string in ) { // As described in §16.9. Al
 inline uintmax_t rudimentary_evaluate( tokens::iterator &pen, int min_precedence = 0 ) {
 	using namespace pp_constants;
 	typedef uintmax_t eval_t; // need a discriminated union of intmax_t and uintmax_t
-	typedef std::map< string, std::pair< std::function< eval_t( eval_t, eval_t ) >, int > > op_map;
+	typedef std::map< string, std::pair< eval_t (*)( eval_t, eval_t ), int > > op_map;
 	static op_map binary_operators {
-	#define SIMPLE_OP( op, prec ) { # op, { []( eval_t l, eval_t r ){ return l op r; }, prec } }
-		SIMPLE_OP( *, 10 ), SIMPLE_OP( /, 10 ), SIMPLE_OP( %, 10 ),
+	#define SIMPLE_OP( op, prec ) { # op, { []( eval_t l, eval_t r ){ return static_cast< eval_t >( l op r ); }, prec } }
+	#define DIVISION_OP( op, prec ) { # op, { []( eval_t l, eval_t r ){ return r == 0 ? throw std::domain_error( "Division by zero." ) : l op r; }, prec } }
+		SIMPLE_OP( *, 10 ), DIVISION_OP( /, 10 ), DIVISION_OP( %, 10 ),
 		SIMPLE_OP( +, 9 ), SIMPLE_OP( -, 9 ),
 		SIMPLE_OP( <<, 8 ), SIMPLE_OP( >>, 8 ),
 		SIMPLE_OP( <=, 7 ), SIMPLE_OP( >=, 7 ), SIMPLE_OP( <, 7 ), SIMPLE_OP( >, 7 ),
@@ -43,9 +44,10 @@ inline uintmax_t rudimentary_evaluate( tokens::iterator &pen, int min_precedence
 		SIMPLE_OP( &&, 2 ), SIMPLE_OP( and, 2 ),
 		SIMPLE_OP( ||, 1 ), SIMPLE_OP( or, 1 )
 	#undef SIMPLE_OP
+	#undef DIVISION_OP
 	};
-	static std::map< string, std::function< eval_t( eval_t ) > > unary_operators {
-	#define SIMPLE_OP( op ) { # op, []( eval_t v ){ return op v; } }
+	static std::map< string, eval_t (*)( eval_t ) > unary_operators {
+	#define SIMPLE_OP( op ) { # op, []( eval_t v ){ return static_cast< eval_t >( op v ); } }
 		SIMPLE_OP( + ), SIMPLE_OP( - ), SIMPLE_OP( ! ), SIMPLE_OP( ~ ),
 		SIMPLE_OP( not ), SIMPLE_OP( compl )
 	#undef SIMPLE_OP
@@ -85,7 +87,9 @@ inline uintmax_t rudimentary_evaluate( tokens::iterator &pen, int min_precedence
 		} else if ( op != binary_operators.end() ) {
 			int prec = std::get< 1 >( op->second );
 			if ( prec < min_precedence ) return acc;
-			acc = std::get< 0 >( op->second )( acc, rudimentary_evaluate( ++ pen, prec + 1 ) );
+			token const & op_token = * pen;
+			try { acc = std::get< 0 >( op->second )( acc, rudimentary_evaluate( ++ pen, prec + 1 ) ); }
+			catch ( std::domain_error &e ) { throw error( op_token, e.what() ); }
 		} else throw error( * pen, "Expected an operator." );
 	}
 	return acc;
