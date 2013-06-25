@@ -138,7 +138,7 @@ auto
 template< pass_policy policy = pass_policy::mandatory, typename obj, typename iit >
 typename util::mention< decltype( pass_some< policy >( std::declval< iit >(), std::declval< iit >(), std::declval< obj >() ) ) >::type
 pass( iit first, iit last, obj && o )
-	{ return pass_some( first, last, std::forward< obj >( o ) ); }
+	{ return pass_some< policy >( first, last, std::forward< obj >( o ) ); }
 #endif
 
 template< typename exception_type, typename obj, typename ... args >
