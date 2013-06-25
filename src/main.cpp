@@ -71,14 +71,11 @@ void point_at( construct const &t ) {
 }
 
 int main( int argc, char *argv[] ) {
-	int status = 0;
 	std::setlocale( LC_ALL, "" );
-	
-	int count = 0;
 	
 	auto && pile = cplus::pile< cplus::phase1_2, cplus::phase3, cplus::phase4, cplus::pragma_filter > (
 		cplus::util::amalgamate(
-			[&count]( cplus::token &&token ){ std::fwrite( token.s.c_str(), 1, token.s.size(), stdout ); std::fwrite( "·", 1, std::strlen( "·" ), stdout ); },
+			[]( cplus::token &&token ){ std::fwrite( token.s.c_str(), 1, token.s.size(), stdout ); std::fwrite( "·", 1, std::strlen( "·" ), stdout ); },
 			[]( cplus::error && err ) {
 				std::clog << err.what() << '\n';
 				if ( ! err.p->get_parent() ) std::cerr << "(no source info)\n";
@@ -103,10 +100,4 @@ int main( int argc, char *argv[] ) {
 	
 	cplus::pass( std::istreambuf_iterator< char >{ std::cin }, std::istreambuf_iterator< char >{}, pile );
 	finalize( pile );
-	
-	/*std::cerr << "fast x " << cplus::fast_dispatch << ", slow x " << cplus::slow_dispatch << '\n';
-	std::copy( std::begin( cplus::slow_histo ), std::end( cplus::slow_histo ), std::ostream_iterator< int >( std::cerr, ", " ) );
-	std::cerr << '\n' << "total passed " << count << '\n';
-	*/
-	return status;
 }
