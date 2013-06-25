@@ -244,6 +244,7 @@ class phase4
 			// Handle directives allowing macros in arguments. This cannot be the default (§16/6).
 			std::iter_swap( input.begin(), pen - 1 ); // drop whitespace after the # token
 			input = process_macros( pen - 1, input.end() );
+			if ( input.front().type != token_type::ws ) input.insert( input.begin(), pp_constants::placemarker );
 			pen = input.begin() + 1;
 			
 			if ( * pen == pp_constants::include_directive ) {
@@ -493,8 +494,9 @@ public:
 					if ( this->paren_depth != 0 )
 						throw error( in, "A macro invocation cannot span a directive (§16.3/11)." );
 					
+					if ( input.empty() ) input.push_back( pp_constants::placemarker ); // ensure there is whitespace before the directive
 					this->pass( std::make_move_iterator( input.begin() ), std::make_move_iterator( input.end() - 1 ) ); // flush uncalled function
-					input.erase( input.begin(), input.end() - 1 ); // save trailing space token (guaranteed to exist)
+					input.erase( input.begin(), input.end() - 1 ); // save trailing space token
 					state = directive;
 					return;
 				}
