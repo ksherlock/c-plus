@@ -155,7 +155,7 @@ private:
 		bool function_like = is_function_like( * definition );
 		std::vector< arg_info > args_info; // size = param count
 		tokens::iterator input_pen = input.begin();
-		bool leading_space = skip_space( input_pen );
+		bool invocation_leading_space = skip_space( input_pen );
 		common.callers.push_back( std::move( * input_pen ) ); // Register in call stack before rescanning.
 		if ( function_like ) skip_space( ++ input_pen ); // ignore space between name and paren
 		
@@ -164,12 +164,12 @@ private:
 			std::make_shared< macro_replacement >( common.callers.front(), tokens{ pp_constants::space,
 				definition->first == pp_constants::line_macro.s? // line number has no location as it is generated ex nihilo
 				token{ token_type::num, string{ std::to_string( line_number( common.callers.front() ) ).c_str(), common.token_config.stream_pool } }
-				: common.presumed.filename
+				: common.presumed.filename, pp_constants::placemarker
 			} )
 		: std::make_shared< macro_replacement >( common.callers.front(), definition->second,
 			tokens{ std::move_iterator< tokens::iterator >{ input_pen }, std::move_iterator< tokens::iterator >{ input.end() } } );
 		
-		input.erase( input.begin() + leading_space, input.end() ); // All input has been moved from except space acc.
+		input.erase( input.begin() + invocation_leading_space, input.end() ); // All input has been moved from except space acc.
 		definition = nullptr; // Clear the "registers" to avoid confusing rescanning.
 		tokens const &def = inst->replacement;
 		
@@ -210,7 +210,8 @@ private:
 		auto acc_it = [&]( token &&t )
 			{ if ( t.type != token_type::ws ) acc_limiter( std::move( t ) ); }; // filter out whitespace
 		
-		for ( auto pen = def.begin() + args_info.size() + 1 /* skip ")" or " " */; pen != def.end(); ) {
+		token const *leading_space = nullptr;
+		for ( auto pen = def.begin() + args_info.size() + 1 /* skip ")" or " " */; pen != def.end(); leading_space = &* pen - 1  ) {
 			/* Each iteration handles some subset of the sequence <token> ## # <token>:
 							leading_token			! leading_token
 				neither		<lhs>					-
@@ -219,23 +220,21 @@ private:
 				both		<lhs> ## # <rhs>		## # <rhs>
 				This is handled as: Perhaps stringize, perhaps catenate, else macro-replace. */
 			
-			bool stringize = false, concat = false, leading_token = false, trailing_space = false;
-			token const *leading_space;
+			bool stringize = false, concat = false, leading_token = false;
 			
-			leading_space = skip_space( pen ); // replacement list doesn't end with whitespace
 			if ( pp_constants::is_concat( * pen ) ) {
-				leading_space = nullptr;
+				leading_space = nullptr; // ## operator consumes space
 			} else if ( ! pp_constants::is_stringize( * pen ) || ! function_like ) { // lead is _neither_ ## _nor_ #
 				pass( std::make_move_iterator( acc ), std::make_move_iterator( acc_limiter.base ), local );
 				acc[ 1 ] = token(); // be sure to invalidate recursion stop in acc[1]
 				acc_limiter.base = acc;
-				* acc_limiter.base ++ = instantiate_component( inst, pen ++ - def.begin() ); // only consume this non-operator token
-				if ( pen != def.end() ) trailing_space = skip_space( pen ); // and this ws
+				* acc_limiter.base ++ = instantiate_component( inst, pen - def.begin() );
+				pen += 2; // Consume this non-operator token and advance past ws (may return to it later).
 				leading_token = true;
 			}
 			
 			if ( pen != def.end() && pp_constants::is_concat( * pen ) ) {
-				skip_space( ++ pen ); // replacement list doesn't end with ##
+				pen += 2; // Replacement list doesn't end with ## or the space following ##.
 				concat = true;
 			}
 			
@@ -243,7 +242,7 @@ private:
 				&& ( ! leading_token || concat ) // exclude case not in above table
 				&& pen != def.end() && pp_constants::is_stringize( * pen ) ) { // =================== STRINGIZE ===
 				
-				skip_space( ++ pen ); // replacement list doesn't end with #
+				pen += 2; // replacement list doesn't end with # or the space following #
 				stringize = true;
 				if ( ! concat ) { // flush buffered input if this isn't RHS of ##
 					pass( std::make_move_iterator( acc ), std::make_move_iterator( acc_limiter.base ), local );
@@ -276,8 +275,10 @@ private:
 					
 					acc_limiter.reset( 1 );
 					instantiate( std::make_shared< raw_text >( s,
-						instantiate_component( std::make_shared< macro_substitution >( std::move( * pen ++ ), arg.begin, arg.end ), 0 )
+						instantiate_component( std::make_shared< macro_substitution >( std::move( * pen ), arg.begin, arg.end ), 0 )
 					), pile< phase3 >( common.token_config, acc_it ) );
+					pen += 2; // consume argument of #
+					
 				} catch ( std::range_error & ) {
 					goto stringize_wrong_count;
 				}
@@ -287,8 +288,10 @@ private:
 			}
 			
 			if ( concat ) { //													=================== CONCATENATE ===
-				if ( ! stringize ) acc[ 1 ] = instantiate_component( inst, pen ++ - def.begin() ); // if value of pen is used for RHS, increment to next token
-				
+				if ( ! stringize ) {
+					acc[ 1 ] = instantiate_component( inst, pen - def.begin() ); // if value of pen is used for RHS, increment to next token
+					pen += 2;
+				}
 				enum { lhs, rhs }; // [0] is LHS, [1] is RHS:
 				token const *begins[ 2 ] = { acc + 0, acc + 1 }, *ends[ 2 ] = { acc + 1, acc + 2 };
 				tokens copies[ 2 ];
@@ -358,7 +361,6 @@ private:
 			} else if ( leading_token ) { //						================================ SUBSTITUTE ===
 				if ( leading_space ) local( * leading_space );
 				-- acc_limiter.base; // don't leave intermediate result
-				if ( trailing_space ) -- pen; // will be next iteration's leading_space
 				
 				auto param = std::find( def.begin(), def.begin() + args_info.size(), acc[ 0 ] );
 				if ( param == def.begin() + args_info.size() ) {
@@ -386,11 +388,11 @@ private:
 	}
 };
 
-macro_context_info::name_map::value_type normalize_macro_definition( tokens &&input, string_pool &macro_pool ) {
+macro_context_info::name_map::value_type normalize_macro_definition( tokens input, string_pool &macro_pool ) {
 	using namespace pp_constants;
 	
-	tokens::iterator pen = input.begin() + 1; // skip leading space in input buffer
-	skip_space( pen, input.end() ); // skip directive "define"
+	tokens::iterator pen = input.begin(); // skip leading space in input buffer and directive "define"
+	skip_space( pen, input.end() );
 	
 	if ( skip_space( ++ pen, input.end() ) == input.end() || pen->type != token_type::id || * pen == variadic ) {
 		if ( pen == input.end() ) -- pen;
@@ -458,8 +460,8 @@ macro_context_info::name_map::value_type normalize_macro_definition( tokens &&in
 		do {
 			replacement.back().s += pen ++ ->s; // condense whitespace
 		} while ( pen != input.end() && pen->type == token_type::ws );
+		if ( pen == input.end() ) replacement.back() = placemarker; // discard whitespace after replacement list
 	}
-	if ( replacement.size() != 1 ) replacement.pop_back(); // discard whitespace after replacement list
 	
 	if ( is_concat( replacement.back() ) )
 		goto bad_cat;

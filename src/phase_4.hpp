@@ -122,11 +122,11 @@ class phase4
 		// Make "defined" a macro which prevents expansion of its single argument. Imitate GCC's extension, manual §4.2.3.
 		if ( preserve_defined_operator ) { // #define defined(x)defined(x##<recursion stop><recursion stop>)
 			using namespace pp_constants; // Catenating first recursion stop ensures that no space precedes second.
-			static tokens const defined_preserver = { { token_type::id, "x" }, rparen, defined_operator,
-				lparen, { token_type::id, "x" }, concat, recursion_stop, recursion_stop, rparen
-			};
+			static auto const defined_preserver = normalize_macro_definition( { define_directive, defined_operator, lparen, { token_type::id, "x" }, rparen,
+				defined_operator, lparen, { token_type::id, "x" }, concat, recursion_stop, recursion_stop, rparen }, literal_pool );
+			
 			// If user-defined macro already exists, use that instead, and don't undefine it.
-			preserve_defined_operator = macros.insert( { pp_constants::defined_operator.s, defined_preserver } ).second;
+			preserve_defined_operator = macros.insert( defined_preserver ).second;
 		}
 		
 		pass( std::make_move_iterator( first ), std::make_move_iterator( last ),
@@ -435,11 +435,11 @@ class phase4
 public:
 	template< typename ... args >
 	phase4( args && ... a )
-		: derived_stage( macro_context_info::name_map{
-			{ pp_constants::stringize_macro.s, tokens{ pp_constants::variadic, pp_constants::rparen,
-										pp_constants::stringize, pp_constants::variadic } },
-			{ pp_constants::file_macro.s, tokens{ pp_constants::space } },
-			{ pp_constants::line_macro.s, tokens{ pp_constants::space } } },
+		: derived_stage( macro_context_info::name_map {
+			normalize_macro_definition( { pp_constants::define_directive, pp_constants::stringize_macro, // #define #(...)#__VA_ARGS__
+				pp_constants::lparen, pp_constants::variadic_decl, pp_constants::rparen, pp_constants::stringize, pp_constants::variadic }, literal_pool ),
+			normalize_macro_definition( { pp_constants::define_directive, pp_constants::file_macro }, literal_pool ),
+			normalize_macro_definition( { pp_constants::define_directive, pp_constants::line_macro }, literal_pool ) },
 			std::forward< args >( a ) ... ),
 		state( normal ), skip_depth( 0 ), conditional_depth( 0 ), guard_detect{ false } {
 		
@@ -448,12 +448,12 @@ public:
 		util::ctime( &time_scalar, time_cstr );
 		std::string time_str( time_cstr );
 		
-		macros.insert( { "__TIME__", { pp_constants::space, { token_type::string_lit,
-			( std::string( "\"" ) + time_str.substr( 11, 8 ) + "\"" ).c_str() } } } );
+		macros.insert( normalize_macro_definition( { pp_constants::define_directive, { token_type::id, "__TIME__" }, pp_constants::space,
+			{ token_type::string_lit, ( std::string( "\"" ) + time_str.substr( 11, 8 ) + "\"" ).c_str() } }, literal_pool ) );
 		
 		time_str.erase( 11, 9 );
-		macros.insert( { "__DATE__", { pp_constants::space, { token_type::string_lit,
-			( std::string( "\"" ) + time_str.substr( 4, 11 ) + "\"" ).c_str() } } } );
+		macros.insert( normalize_macro_definition( { pp_constants::define_directive, { token_type::id, "__DATE__" }, pp_constants::space,
+			{ token_type::string_lit, ( std::string( "\"" ) + time_str.substr( 4, 11 ) + "\"" ).c_str() } }, literal_pool ) );
 		
 		struct pp_master_config : config_pragma_base {
 			phase4 *master;
