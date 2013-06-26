@@ -436,8 +436,10 @@ macro_context_info::name_map::value_type normalize_macro_definition( tokens &&in
 	if ( skip_space( pen, input.end() ) != input.end() && is_concat( * pen ) ) bad_cat:
 		throw error( * pen, "Concatenation (##) operator may not appear at beginning or end of a macro (§16.3.3/1)." );
 	
+	skip_space( pen, input.end() ); // Discard whitespace before replacement list, unconditionally.
+	
 	bool got_stringize = false;
-	while ( skip_space( pen, input.end() ) != input.end() ) {
+	while ( pen != input.end() ) {
 		if ( got_stringize && nargs // validate stringize operator
 			&& std::find( replacement.begin(), replacement.begin() + nargs - 1, * pen )
 				== replacement.begin() + nargs - 1 ) throw error( * pen,
@@ -449,11 +451,15 @@ macro_context_info::name_map::value_type normalize_macro_definition( tokens &&in
 			throw error( * pen, "The identifier __VA_ARGS__ is reserved (§16.3/5)." );
 		
 		replacement.push_back( pen ++ ->reallocate( macro_pool ) );
-		if ( pen != input.end() && pen->type == token_type::ws ) {
-			replacement.push_back( std::move( pen ++ ->reallocate( macro_pool ) ) ); // condense whitespace
-		}
+		replacement.push_back( placemarker );
+		
+		if ( pen == input.end() || pen->type != token_type::ws ) continue;
+		replacement.back().reallocate( macro_pool );
+		do {
+			replacement.back().s += pen ++ ->s; // condense whitespace
+		} while ( pen != input.end() && pen->type == token_type::ws );
 	}
-	if ( replacement.size() > 1 && replacement.back().type == token_type::ws ) replacement.pop_back();
+	if ( replacement.size() != 1 ) replacement.pop_back(); // discard whitespace after replacement list
 	
 	if ( is_concat( replacement.back() ) )
 		goto bad_cat;

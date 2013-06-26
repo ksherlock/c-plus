@@ -66,6 +66,18 @@ struct phase1_2_config : config_pragma_base {
 // Output format for Phases 3-4
 CPLUS_IMPORTABLE_ENUM( token_type, ws, id, num, punct, string_lit, char_lit, directive, header_name, misc )
 
+bool token_semantic_equal( token const & l, token const & r ) {
+	if ( l.type != token_type::ws || r.type != token_type::ws ) return l.type == r.type && l.s == r.s;
+	auto all_splices = []( string const & in ) {
+		if ( in.size() % 2 ) return false;
+		for ( auto pen = in.begin(); pen != in.end(); pen += 2 ) {
+			if ( ! std::equal( pen, pen + 2, "\\\n" ) ) return false;
+		}
+		return true;
+	};
+	return all_splices( l.s ) == all_splices( r.s );
+}
+
 enum class phase3_decode_state { normal, raw, escape };
 
 struct phase3_config : config_pragma_base {

@@ -163,7 +163,8 @@ class phase4
 		} else if ( * pen == pp_constants::define_directive ) {
 			auto macro = normalize_macro_definition( std::move( input ), this->get_config().macro_pool );
 			auto definition = macros.insert( macro );
-			if ( definition.second == false && * definition.first != macro )
+			if ( definition.second == false && ( macro.second.size() != definition.first->second.size()
+					|| ! std::equal( macro.second.begin(), macro.second.end(), definition.first->second.begin(), token_semantic_equal ) ) )
 				throw error( macro.second.front(), "Macro definition does not match previous definition." );
 			
 		} else if ( * pen == pp_constants::undef_directive ) {
