@@ -67,9 +67,22 @@ inline uintmax_t rudimentary_evaluate( tokens::iterator &pen, int min_precedence
 		std::istringstream s( pen->s );
 		s.unsetf( std::ios::basefield ); // Enable hex and octal notations.
 		s >> acc;
-		if ( s.peek() == 'u' || s.peek() == 'U' ) s.ignore();
-		if ( ( s.peek() == 'l' || s.peek() == 'L' ) && s.peek() == s.str().back() ) s.ignore( 2 ); // 2 may be excessive, triggered by eg 1L
-		if ( ! s.ignore().eof() ) throw error( * pen, "Not an integer." );
+		
+		bool got_u = false, got_l = false;
+		for ( int ch; ( ch = s.get() ) != std::istringstream::traits_type::eof(); ) switch ( ch ) {
+		case 'l': case 'L':
+			if ( got_l ) goto bad_num;
+			got_l = true;
+			if ( s.peek() == ch ) s.ignore();
+			break;
+		case 'u': case 'U':
+			if ( got_u ) goto bad_num;
+			got_u = true;
+			break;
+		default: bad_num:
+			throw error( * pen, "Not an integer." );
+		}
+		
 	} else if ( * pen == true_value || * pen == false_value ) {
 		acc = * pen == true_value;
 	} else throw error( * pen, "Expected a number." );
