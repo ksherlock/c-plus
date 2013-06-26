@@ -101,14 +101,19 @@ public:
 						ucn_acc = 0;
 						unicode_remaining = c.c == 'u'? 4 : 8;
 						state = ucn;		shift( c );		return;
+						
 			case '\r':	state = msdos;		shift( c );		return; // phase 2
-			case '\n':	state = normal;		shift_reset();	return; // phase 2
+			
+			case '\n': splice:
+						this->template pass< pass_policy::optional >( line_splice( std::move( shift_buffer[0] ) ) );
+						state = normal;		shift_reset();	return; // phase 2
+						
 			default:	state = normal;		unshift();		continue;
 			}
 		
 		case msdos: // phase 2. Delete any \CRLF, not checking for consistency.
 			switch ( c.c ) {
-			case '\n':	state = normal;		shift_reset();	return;
+			case '\n':	goto splice;
 			default:	state = normal;		unshift();		continue;
 			}
 			

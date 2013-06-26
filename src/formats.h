@@ -46,6 +46,9 @@ struct pp_char : raw_char {
 	pp_char_source s;
 };
 
+struct line_splice : construct
+	{ explicit line_splice( construct in_c = {} ) : construct( std::move( in_c ) ) {} };
+
 struct phase1_2_config : config_pragma_base {
 	bool disable_trigraphs;
 	

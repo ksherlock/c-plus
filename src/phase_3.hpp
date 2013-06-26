@@ -62,6 +62,9 @@ class phase3 : public stage< output_iterator, phase3_config >,
 	int state, state_after_space;
 	bool in_directive; // only serves to diagnose whitespace restriction of §16/4
 	
+	line_splice splice_first; // the first line splice, if any, seen during the last token
+	std::size_t splice_count = 0;
+	
 	cplus::token token;
 	
 	std::vector< pp_char > input_buffer;
@@ -119,6 +122,10 @@ class phase3 : public stage< output_iterator, phase3_config >,
 			state = after_newline;
 			
 		case ws: // every other state returns here after pass(), even if a space character hasn't been seen
+			if ( splice_count != 0 ) { // Reinsert line splices seen during last token as whitespace, if preserve_space is set.
+				token.construct::operator = ( std::move( splice_first ) );
+				while ( -- splice_count ) token.s += "\\\n";
+			}
 		case space_run:
 			if ( c == '\n' || c == '\r' ) { // quietly allow CR on the assumption it precedes LF.
 				if ( this->get_config().preserve_space && ! token.s.empty() ) {
@@ -576,6 +583,16 @@ public:
 		switch ( state ) {
 			case rstring: s = phase3_decode_state::raw; break;
 			case escape: s = phase3_decode_state::escape; break;
+		}
+	}
+	
+	void operator() ( line_splice in ) {
+		if ( ! this->get_config().preserve_space ) return;
+		if ( state == line_comment || state == block_comment || state == space_run || state == after_newline || ( state == ws && ! token.s.empty() ) ) {
+			token.s += "\\\n";
+		} else {
+			splice_first = std::move( in );
+			++ splice_count;
 		}
 	}
 	
