@@ -259,8 +259,8 @@ private:
 				try {
 					string s( 1, '\"' );
 					for ( auto pen = arg.begin; pen != arg.end; ++ pen ) {
-						if ( pen->type == token_type::ws && ! pen->s.empty() ) {
-							s += ' ';
+						if ( pen->type == token_type::ws ) {
+							if ( token_semantic_equal( * pen, pp_constants::space ) ) s += ' ';
 							continue;
 						}
 						for ( std::uint8_t c : pen->s ) {
