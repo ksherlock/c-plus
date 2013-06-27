@@ -72,6 +72,7 @@ struct parameter_exceptions< ftor, typename util::mention< typename ftor::parame
 
 // pass() puts input into a stage (functor or iterator) or its succeeding stages, catches thrown exceptions and feeds them back in.
 enum class pass_policy { mandatory, optional, enable_if };
+enum class diagnose_policy { none, pass, fatal }; // Apply to either sender or receiver. Sender cannot specify none.
 
 template< pass_policy = {}, typename oit, typename v >
 auto pass( oit it, v && val )
@@ -203,6 +204,22 @@ public:
 	template< typename exception_type, typename ... args >
 	void pass_or_throw( args && ... a )
 		{ cplus::pass_or_throw< exception_type >( * this, std::forward< args >( a ) ... ); }
+	
+	template< diagnose_policy policy, typename exception_type, typename ... args >
+	typename std::enable_if< std::is_void< decltype( cplus::pass( std::declval< derived_stage & >(), std::declval< exception_type >() ) ) >::value
+								&& policy == diagnose_policy::pass, bool >::type
+	diagnose( bool condition, args && ... a ) {
+		if ( condition ) { std::cerr << "passing\n"; pass< pass_policy::mandatory >( exception_type( std::forward< args >( a ) ... ) ); }
+		return condition;
+	}
+	
+	template< diagnose_policy policy, typename exception_type, typename ... args >
+	typename std::enable_if< ! std::is_void< decltype( cplus::pass( std::declval< derived_stage & >(), std::declval< exception_type >() ) ) >::value
+								|| policy == diagnose_policy::fatal, bool >::type
+	diagnose( bool condition, args && ... a ) {
+		if ( condition ) { std::cerr << "throwing\n"; throw exception_type( std::forward< args >( a ) ... ); }
+		return false;
+	}
 };
 
 // Non-virtual abstract base class.

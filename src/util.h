@@ -167,26 +167,27 @@ public:
 		result = c;
 		return true;
 	}
+	
+	struct error : std::range_error {
+		bool incomplete; // true if operator() returned false for this character.
+		error( bool in_incomplete ) : std::range_error( "malformed UTF-8" ), incomplete( in_incomplete ) {}
+	};
 private:
 	bool non_ascii( std::uint8_t c ) {
 		if ( len == 0 ) {
 			if ( c >= 0xC0 ) {
-				if ( c == 0xFF ) malformed: {
-					throw std::range_error( "malformed UTF-8" );
-				}
+				if ( c == 0xFF ) throw error( false );
 				len = 1;
-				for ( std::uint8_t cback = c; cback & 0x20; cback <<= 1 ) {
-					++ len;
-				}
+				while ( c & ( 0x40 >> len ) ) ++ len;
 				result = ( c + ( 0x80 >> len ) ) & 0xFF;
 				min = 1 << ( len > 1? len * 5 + 1 : 7 ); // lowest acceptible end result
 				return false;
-			} else goto malformed;
+			} else throw error( false );
 		} else {
-			if ( c < 0x80 || c >= 0xC0 ) goto malformed;
+			if ( c < 0x80 || c >= 0xC0 ) throw error( true );
 			result = result << 6 | ( c & 0x3F );
 			if ( -- len != 0 ) return false;
-			if ( result < min ) goto malformed;
+			if ( result < min ) throw error( true );
 			return true;
 		}
 	}
