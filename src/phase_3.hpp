@@ -225,7 +225,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 						token.type = string_lit;
 						rstring_term_start = std::string::npos;
 						return;
-					} else if ( token.type != string_lit ) { // 
+					} else {
 						unshift( in );
 						token.type = state = string_lit;
 						return;
