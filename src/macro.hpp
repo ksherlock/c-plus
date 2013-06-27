@@ -207,8 +207,8 @@ private:
 		// Use a local copy of phase 3 to generate tokens one at a time as intermediate results.
 		token acc[ 2 ]; // [0] is LHS, [1] is RHS from stringize or LHS recursion stop
 		auto acc_limiter( util::limit_range( &* acc ) ); // actual range specified at each use
-		auto acc_it = [&]( token &&t )
-			{ if ( t.type != token_type::ws ) acc_limiter( std::move( t ) ); }; // filter out whitespace
+		auto const acc_it = std::function< void( token && ) >( [&]( token &&t )
+			{ if ( t.type != token_type::ws ) acc_limiter( std::move( t ) ); } ); // filter out whitespace
 		
 		token const *leading_space = nullptr;
 		for ( auto pen = def.begin() + args_info.size() + 1 /* skip ")" or " " */; pen != def.end(); leading_space = &* pen - 1  ) {

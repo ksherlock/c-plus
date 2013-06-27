@@ -142,9 +142,12 @@ class phase4
 			preserve_defined_operator = macros.insert( defined_preserver ).second;
 		}
 		
+		auto filter = pile< macro_filter >( std::back_inserter( ret ) );
 		pass( std::make_move_iterator( first ), std::make_move_iterator( last ),
-			pile< macro_context, macro_filter >( static_cast< macro_context_info & >( * this ), std::back_inserter( ret ) ) );
-		
+			pile< macro_context >(
+				static_cast< macro_context_info & >( * this ),
+				std::function< void( token && ) >( std::ref( filter ) ) ) );
+
 		if ( preserve_defined_operator ) macros.erase( pp_constants::defined_operator.s ); // #undef defined
 		
 		return ret;
@@ -629,7 +632,8 @@ public:
 							
 							tokens args;
 							instantiate( std::make_shared< raw_text >( destringize( in.s ), in ),
-								pile< phase3 >( get_config< phase3_config >(), std::back_inserter( args ) ) );
+								pile< phase3 >( get_config< phase3_config >(),
+									static_cast< std::function< void( token && ) > const & >( [ & args ]( token && t ){ args.push_back( std::move( t ) ); } ) ) );
 							auto pen = args.begin();
 							if ( pp_constants::skip_space( pen, args.end() ) == args.end() ) return;
 							
