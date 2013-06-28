@@ -40,6 +40,21 @@ template< typename t > // provide symmetry with std::ref
 typename std::decay< t >::type val( t &&o )
 	{ return std::forward< t >( o ); }
 
+template< typename t >
+class sentry {
+	t o;
+public:
+	sentry( t in_o ) : o( std::move( in_o ) )
+		{ static_assert( noexcept( o() ), "Please check that the finally block cannot throw, and mark the lambda as noexcept." ); }
+	
+	sentry( sentry && ) = delete;
+	sentry( sentry const & ) = delete;
+	~ sentry() noexcept { o(); }
+};
+
+template< typename t >
+sentry< t > finally( t o ) { return { std::move( o ) }; }
+
 void *align( std::size_t alignment, std::size_t size, void *&ptr, std::size_t &space ) {
 	auto pn = reinterpret_cast< std::size_t >( ptr );
 	auto aligned = ( pn + alignment - 1 ) & - alignment;
