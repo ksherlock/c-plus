@@ -86,10 +86,13 @@ class phase3 : public stage< output_iterator, phase3_config >,
 		/*	Newline characters also override state_after_space, but to see a
 			newline, state must equal ws. So it's handled in "case ws:". */
 		if ( token.type != ws ) state_after_space = ws;
-		
+		auto && guard = util::finally( [ this ]() noexcept {
+			token = {};
+			token.type = state = state_after_space;
+		} );
 		phase3::stage::pass( std::move( token ) );
-		token.s.clear();
-		token.type = state = state_after_space;
+		
+		static_cast< void >( guard );
 	}
 	
 	void general_path( raw_char const &in, pp_char_source in_s ) {

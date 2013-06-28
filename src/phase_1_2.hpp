@@ -32,8 +32,9 @@ class phase1_2 : public stage< output_iterator, phase1_2_config >,
 		{ * shift_p ++ = { c, normal }; }
 	
 	void unshift() {
+		auto && guard = util::finally( [this]() noexcept { shift_reset(); } );
 		pass( shift_buffer, shift_p );
-		shift_reset();
+		static_cast< void >( guard );
 	}
 	
 	phase3_decode_state get_decode_state() {
@@ -73,9 +74,9 @@ public:
 			static char const	tri_source[] =	"='()!<>-",
 								tri_dest[] =	"#^[]|{}~";
 			if ( char const *sp = std::strchr( tri_source, c.c ) ) {
-				pass( pp_char{ { static_cast< std::uint8_t >( tri_dest[ sp - tri_source ] ), c }, trigraph } ); // pass trigraph state to client...
 				shift_reset();
-				state = normal; // ... before resetting state
+				state = normal; // reset state
+				pass( pp_char{ { static_cast< std::uint8_t >( tri_dest[ sp - tri_source ] ), c }, trigraph } ); // pass trigraph, located at discriminating symbol
 				return;
 			} else if ( c.c == '/' ) {
 				shift_reset();
@@ -83,9 +84,13 @@ public:
 				state = backslash;
 				return;
 			} else if ( c.c == '?' ) { // may be a trigraph preceded by a "?"
-				pass( * shift_buffer ); // unshift only that "?"
-				shift_p = std::move( shift_buffer + 1, shift_p, shift_buffer );
-				shift( c.c ); // shift current "?"
+				auto && guard = util::finally( [&]() noexcept {
+					shift_p = std::move( shift_buffer + 1, shift_p, shift_buffer );
+					shift( c.c ); // shift current "?"
+				} );
+				pass( * shift_buffer ); // unshift only non-trigraph "?"
+				
+				static_cast< void >( guard );
 				return; // remain in same state
 			
 			} else { // not a trigraph
@@ -104,10 +109,14 @@ public:
 						
 			case '\r':	state = msdos;		shift( c );		return; // phase 2
 			
-			case '\n': splice:
-						this->template pass< pass_policy::optional >( line_splice( std::move( shift_buffer[0] ) ) );
-						state = normal;		shift_reset();	return; // phase 2
-						
+			case '\n': splice: {
+					auto && guard = util::finally( [this]() noexcept {
+						state = normal;		shift_reset();
+					} );
+					this->template pass< pass_policy::optional >( line_splice( std::move( shift_buffer[0] ) ) );
+					static_cast< void >( guard );
+															return; // phase 2
+				}
 			default:	state = normal;		unshift();		continue;
 			}
 		
@@ -132,21 +141,26 @@ public:
 			if ( -- unicode_remaining ) {
 				shift( c );
 				return;
-			} else if ( ucn_acc < 0x80 ) {
-				pass( pp_char{ { static_cast< std::uint8_t >( ucn_acc ), shift_buffer[0] }, ucn } );
+			} else {
+				auto && guard = util::finally( [this]() noexcept {
+					state = normal;
+					shift_reset();
+				} );
+				if ( ucn_acc < 0x80 ) {
+					pass( pp_char{ { static_cast< std::uint8_t >( ucn_acc ), shift_buffer[0] }, ucn } );
 				
-			} else { // convert ucn_acc to UTF-8
-				unicode_remaining = 6; // number of UTF-8 trailer chars
-				for ( int shift = 31; ucn_acc >> shift == 0; shift -= 5 ) -- unicode_remaining;
+				} else { // convert ucn_acc to UTF-8
+					unicode_remaining = 6; // number of UTF-8 trailer chars
+					for ( int shift = 31; ucn_acc >> shift == 0; shift -= 5 ) -- unicode_remaining;
 				
-				pass( pp_char{ { static_cast< std::uint8_t >( 0x7F80 >> unicode_remaining | ucn_acc >> unicode_remaining * 6 ), shift_buffer[0] }, ucn } );
-				while ( unicode_remaining -- ) {
-					pass( pp_char{ { static_cast< std::uint8_t >( 0x80 | ( ( ucn_acc >> unicode_remaining * 6 ) & 0x3F ) ), shift_buffer[0] }, ucn } );
+					pass( pp_char{ { static_cast< std::uint8_t >( 0x7F80 >> unicode_remaining | ucn_acc >> unicode_remaining * 6 ), shift_buffer[0] }, ucn } );
+					while ( unicode_remaining -- ) {
+						pass( pp_char{ { static_cast< std::uint8_t >( 0x80 | ( ( ucn_acc >> unicode_remaining * 6 ) & 0x3F ) ), shift_buffer[0] }, ucn } );
+					}
 				}
+				static_cast< void >( guard );
+				return;
 			}
-			state = normal;
-			shift_reset();
-			return;
 		}
 	}
 };
