@@ -55,6 +55,10 @@ public:
 template< typename t >
 sentry< t > finally( t o ) { return { std::move( o ) }; }
 
+#define CPLUS_FINALLY_NAMED( NAME, ... ) auto && NAME = util::finally( [&]() noexcept { __VA_ARGS__ } );
+#define CPLUS_FINALLY( ... ) CPLUS_FINALLY_NAMED( guard, __VA_ARGS__ )
+#define CPLUS_DO_FINALLY static_cast< void >( guard );
+
 void *align( std::size_t alignment, std::size_t size, void *&ptr, std::size_t &space ) {
 	auto pn = reinterpret_cast< std::size_t >( ptr );
 	auto aligned = ( pn + alignment - 1 ) & - alignment;

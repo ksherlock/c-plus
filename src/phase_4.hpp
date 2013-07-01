@@ -141,22 +141,24 @@ class phase4
 			// If user-defined macro already exists, use that instead, and don't undefine it.
 			preserve_defined_operator = macros.insert( defined_preserver ).second;
 		}
+		CPLUS_FINALLY (
+			if ( preserve_defined_operator ) macros.erase( pp_constants::defined_operator.s ); // #undef defined
+		)
 		
 		auto filter = pile< macro_filter >( std::back_inserter( ret ) );
 		pass( std::make_move_iterator( first ), std::make_move_iterator( last ),
 			pile< macro_context >(
 				static_cast< macro_context_info & >( * this ),
 				std::function< void( token && ) >( std::ref( filter ) ) ) );
-
-		if ( preserve_defined_operator ) macros.erase( pp_constants::defined_operator.s ); // #undef defined
 		
+		CPLUS_DO_FINALLY
 		return ret;
 	}
 	
 	void validate_else( token const &directive ) {
-		if ( ( directive == pp_constants::else_directive || directive == pp_constants::elif_directive )
-				&& else_stack.top() == true )
-			throw error( directive, "An #else or #elif group cannot follow another #else group." );
+		this->template diagnose< diagnose_policy::fatal, error >(
+			( directive == pp_constants::else_directive || directive == pp_constants::elif_directive ) && else_stack.top() == true,
+			directive, "An #else or #elif group cannot follow another #else group." );
 		else_stack.top() = directive == pp_constants::else_directive;
 	}
 	
@@ -165,6 +167,11 @@ class phase4
 		
 		tokens::iterator pen = input.begin() + 1;
 		skip_space( pen, input.end() );
+		
+		bool is_include = false; // handle_header does its own input.resize( 1 ) before entering the header.
+		CPLUS_FINALLY(
+			if ( ! is_include ) input.resize( 1 ); // Preceding whitespace continues accumulation.
+		)
 		
 		if ( pen != input.end() && ( ( conditional_depth == guard_detect.depth // at file top level,
 				&& * pen != pp_constants::ifndef_directive && * pen != pp_constants::if_directive ) // any wrong directive
@@ -179,88 +186,105 @@ class phase4
 		} else if ( * pen == pp_constants::define_directive ) {
 			auto macro = normalize_macro_definition( std::move( input ), this->get_config().macro_pool );
 			auto definition = macros.insert( macro );
-			if ( definition.second == false && ( macro.second.size() != definition.first->second.size()
-					|| ! std::equal( macro.second.begin(), macro.second.end(), definition.first->second.begin(), token_semantic_equal ) ) )
-				throw error( macro.second.front(), "Macro definition does not match previous definition." );
+			tokens::const_iterator diff;
+			this->template diagnose< diagnose_policy::fatal, error >( definition.second == false
+				&& ( macro.second.size() != definition.first->second.size()
+				|| ! std::equal( macro.second.begin(), macro.second.end(), definition.first->second.begin() ) ),
+				util::make_implicit_thunk( [&]{
+					return * std::mismatch( macro.second.begin(), macro.second.begin() + std::min( macro.second.size() - 1, definition.first->second.size() ),
+						definition.first->second.begin(), token_semantic_equal ).first;
+				} ), "Macro definition does not match previous definition." );
 			
 		} else if ( * pen == pp_constants::undef_directive ) {
-			if ( skip_space( ++ pen, input.end() ) == input.end() )
-				throw error( input.back(), "Expected an identifier before end of line." );
-			if ( pen->type != token_type::id )
-				throw error( * pen, "Expected an identifier." );
-			if ( pen->s == pp_constants::file_macro.s || pen->s == pp_constants::line_macro.s )
-				throw error( * pen, "Cannot #undef this macro (§16.8/4)." );
+			do this->template diagnose< diagnose_policy::fatal, error >( skip_space( ++ pen, input.end() ) == input.end(),
+				input.back(), "Expected an identifier before end of line." );
+			while ( this->template diagnose< diagnose_policy::pass, error >( pen->type != token_type::id,
+				* pen, "Expected an identifier." ) );
+			this->template diagnose< diagnose_policy::fatal, error >( pen->s == pp_constants::file_macro.s || pen->s == pp_constants::line_macro.s,
+				* pen, "Cannot #undef this macro (§16.8/4)." );
 			
 			macros.erase( pen->s );
 			
-			if ( skip_space( ++ pen, input.end() ) != input.end() )
-				throw error( input.back(), "Expected end of line." );
+			this->template diagnose< diagnose_policy::pass, error >( skip_space( ++ pen, input.end() ) != input.end(),
+				input.back(), "Expected end of line." );
 			
-		} else if ( * pen == pp_constants::error_directive ) {
-			throw error( * pen, "Error directive (§16.5)." ); // Rely on driver to show actual message.
+		} else if ( this->template diagnose< diagnose_policy::pass, error >( * pen == pp_constants::error_directive,
+			* pen, "Error directive (§16.5)." ) ) ; // Rely on driver to show actual message.
 		
-		} else if ( * pen == pp_constants::pragma_directive ) { // convert #pragma to _Pragma()
-			auto local( ref( * this ) );
-			tokens intro = { pp_constants::pragma_operator, pp_constants::lparen,
-					pp_constants::stringize_macro, pp_constants::lparen },
-				arg( std::move( input ) ),
-				term = { pp_constants::rparen, pp_constants::rparen, std::move( pen[ -1 ] ) }; // end with whitespace
+		else if ( * pen == pp_constants::pragma_directive ) { // convert #pragma to _Pragma()
+			tokens arg;
+			arg.swap( input );
+			CPLUS_FINALLY(
+				input.clear();
+				pass( * this, std::move( arg.front() ) );
+			)
 			
-			pass( std::make_move_iterator( intro.begin() ), std::make_move_iterator( intro.end() ), local );
+			tokens intro = { pp_constants::pragma_operator, pp_constants::lparen, pp_constants::stringize_macro, pp_constants::lparen };
+			pass( std::make_move_iterator( intro.begin() ), std::make_move_iterator( intro.end() ), * this );
+			pass( std::make_move_iterator( ++ pen ), std::make_move_iterator( arg.end() ), * this ); // Swapping container preserves iterators.
 			
-			auto pos_back = arg.back();
-			skip_space( ++ pen, arg.end() ); // does moving a container preserve iterators into it?
-			pass( std::make_move_iterator( pen ), std::make_move_iterator( arg.end() ), local );
-			if ( this->paren_depth != 1 ) // not infallible, but #pragma is implementation-defined anyway
-				throw error( pos_back, "Parens must balance in #pragma." );
-			
-			pass( std::make_move_iterator( term.begin() ), std::make_move_iterator( term.end() ), local );
+			this->template diagnose< diagnose_policy::pass, error >( this->paren_depth != 1, // Not infallible, but #pragma is implementation-defined anyway.
+				arg.back(), "Parens must balance in #pragma." );
+			while ( this->paren_depth != 0 ) {
+				pass( * this, util::val( pp_constants::rparen ) ); // Close the stringize macro (and whatever the user left unbalanced).
+			}
+			pass( * this, util::val( pp_constants::rparen ) ); // Terminate the _Pragma operator which is not a macro.
+			CPLUS_DO_FINALLY // Keep accumulating whitespace.
 		
 		} else if ( * pen == pp_constants::else_directive || * pen == pp_constants::endif_directive
 					|| ( * pen == pp_constants::elif_directive && state != skip_if ) ) {
-			if ( conditional_depth == 0 ) throw error( * pen, "This directive must terminate a conditional block." );
+			this->template diagnose< diagnose_policy::fatal, error >( conditional_depth == 0, * pen, "This directive must terminate a conditional block." );
 			-- conditional_depth;
 			if ( * pen == pp_constants::endif_directive ) else_stack.pop();
 			else state = skip_else;
 			
 			validate_else( * pen );
 			
-			if ( * pen != pp_constants::elif_directive && skip_space( ++ pen, input.end() ) != input.end() )
-				throw error( * pen, "This directive takes no arguments." );
+			this->template diagnose< diagnose_policy::pass, error >( * pen != pp_constants::elif_directive && skip_space( ++ pen, input.end() ) != input.end(),
+				util::make_implicit_thunk( [&]{ return * pen; } ), "This directive takes no arguments." );
 			
 		} else if ( * pen == pp_constants::if_directive || * pen == pp_constants::elif_directive
 					|| * pen == pp_constants::ifdef_directive || * pen == pp_constants::ifndef_directive ) {
-			token saved_space = std::move( input.front() );
-			input.front() = pp_constants::space;
+			bool condition = false;
+			CPLUS_FINALLY (
+				if ( condition ) {
+					if ( state == skip_if ) state = entering;
+					++ conditional_depth;
+				} else state = skip_if;
+				else_stack.push( false ); // Not strictly exception-safe, but this only allocates one bit.
+				if ( std::uncaught_exception() && guard_detect.depth == conditional_depth ) guard_detect.valid = false;
+			)
 			
 			// 1st pass: normalize. "ifdef" => "defined", "ifndef " => "!defined", "if" and "elif" just get erased.
 			if ( * pen == pp_constants::ifdef_directive || * pen == pp_constants::ifndef_directive ) {
 				if ( * pen == pp_constants::ifndef_directive ) {
 					* pen ++ = pp_constants::bang;
-					if ( pen->type != token_type::ws ) throw error( * pen, "Expected space." ); // hah
+					this->template diagnose< diagnose_policy::pass, error >( pen->type != token_type::ws, * pen, "Expected space." ); // hah
 				}
 				* pen = pp_constants::defined_operator;
-				if ( skip_space( ++ pen, input.end() )->type != token_type::id
-					|| skip_space( ++ pen, input.end() ) != input.end() ) throw error( * pen,
-					"#ifdef and #ifndef accept only a single identifier argument." );
+				do this->template diagnose< diagnose_policy::fatal, error >( skip_space( ++ pen, input.end() ) == input.end(),
+					input.back(), "Expected an identifier before end of line." );
+				while ( this->template diagnose< diagnose_policy::pass, error >( pen->type != token_type::id,
+					* pen, "Expected an identifier." ) && ( * pen = pp_constants::space, true ) );
+				
+				if ( this->template diagnose< diagnose_policy::pass, error >( skip_space( ++ pen, input.end() ) != input.end(),
+					util::make_implicit_thunk( [&]{ return * pen; } ), "#ifdef and #ifndef accept only a single identifier argument." ) ) {
+					std::fill( pen, input.end(), pp_constants::space );
+				}
 			} else * pen = pp_constants::space;
+			
+			condition = evaluate_condition( input.begin(), input.end() );
 			
 			if ( guard_detect.valid && guard_detect.depth == conditional_depth ) {
 				if ( guard_detect.guard == pp_constants::guard_default ) {
-					for ( auto &t : input ) t = t.reallocate( this->get_config().macro_pool );
-					guard_detect.guard = input;
+					guard_detect.guard.assign( std::make_move_iterator( input.begin() + 1 ), std::make_move_iterator( input.end() ) );
+					for ( auto & t : guard_detect.guard ) t = t.reallocate( this->get_config().macro_pool );
 				} else {
 					guard_detect.valid = false;
 				}
 			}
+			CPLUS_DO_FINALLY
 			
-			if ( ! evaluate_condition( input.begin(), input.end() ) ) state = skip_if;
-			else {
-				if ( state == skip_if ) state = entering;
-				++ conditional_depth;
-			}
-			else_stack.push( false );
-			input = { std::move( saved_space ) };
 		} else if ( * pen == pp_constants::include_directive || * pen == pp_constants::line_directive ) {
 			// Handle directives allowing macros in arguments. This cannot be the default (§16/6).
 			std::iter_swap( input.begin(), pen - 1 ); // drop whitespace after the # token
@@ -269,38 +293,40 @@ class phase4
 			pen = input.begin() + 1;
 			
 			if ( * pen == pp_constants::include_directive ) {
-				return handle_header( pen ); // flushes directive input and obtains new input
+				is_include = true;
+				handle_header( header_access_from_input( pen ) ); // flushes directive input and obtains new input
 			
 			} else if ( * pen == pp_constants::line_directive ) {
 				std::ptrdiff_t physical_line = this->line_number( * pen ); // signed to prevent overflow below
 				
-				if ( skip_space( ++ pen, input.end() ) == input.end() )
-					throw error( input.front(), "Expected line number." );
+				this->template diagnose< diagnose_policy::fatal, error >( skip_space( ++ pen, input.end() ) == input.end(),
+					input.front(), "Expected line number." );
 				
 				std::istringstream s( pen->s ); // decimal-only is default
-				int32_t line_number = * std::istream_iterator< int32_t >( s );
-				if ( ! s || ! s.ignore().eof() || line_number == 0 ) throw error( * pen,
-					"Line number must be a decimal literal between 1 and 2^31-1 (§16.4/3)." );
+				std::int32_t line_number = 0;
+				this->template diagnose< diagnose_policy::pass, error >( ! ( s >> line_number ) || ! s.ignore().eof(),
+					* pen, "Line number must be a decimal literal between 1 and 2^31-1 (§16.4/3)." );
 				
-				this->presumed.line_displacement = line_number - physical_line - 1;
-				
+				if ( line_number != 0 ) { // User may set filename only using #line 0 "name".
+					this->presumed.line_displacement = line_number - physical_line - 1;
+					state = entering; // print new file name
+				}
 				if ( skip_space( ++ pen, input.end() ) != input.end() ) {
-					if ( pen->type != token_type::string_lit || pen->s.front() != '"' || pen->s.back() != '"' )
-						throw error( * pen, "Filename must be a simple string (§16.4/4)." );
+					this->template diagnose< diagnose_policy::fatal, error >( pen->type != token_type::string_lit || pen->s.front() != '"' || pen->s.back() != '"',
+						* pen, "Filename must be a simple string (§16.4/4)." );
 					
 					this->presumed.filename = std::move( * pen );
+					state = entering; // print new file name
 					
-					if ( skip_space( ++ pen, input.end() ) != input.end() )
-						throw error( * pen, "Extra tokens after replacement filename." );
+					this->template diagnose< diagnose_policy::pass, error >( skip_space( ++ pen, input.end() ) != input.end(),
+						util::make_implicit_thunk( [&]{ return * pen; } ), "Extra tokens after replacement filename." );
 				}
-				
-				state = entering; // print new line number
 			}
 		} else {
-			throw error( * pen, "Non-directive." );
+			this->template diagnose< diagnose_policy::pass, error >( true, * pen, "Non-directive." );
 		}
 		
-		input.resize( 1 ); // preceding whitespace continues accumulation
+		CPLUS_DO_FINALLY // Trim input buffer to whitespace accumulator.
 	}
 	
 	bool evaluate_condition( tokens::const_iterator first, tokens::const_iterator last ) {
@@ -317,8 +343,8 @@ class phase4
 			}
 		}
 		
-		if ( pp_constants::skip_space( pen = expr.begin(), expr.end() ) == expr.end() )
-			throw error( pen[ -1 ], "No controlling expression for conditional directive." );
+		if ( this->template diagnose< diagnose_policy::pass, error >( pp_constants::skip_space( pen = expr.begin(), expr.end() ) == expr.end(),
+			util::make_implicit_thunk( [&]{ return pen[ -1 ]; } ), "No controlling expression for conditional directive." ) ) return true; // Just take a guess ;v) .
 		
 		expr.erase( std::remove_if( expr.begin(), expr.end(),
 									[]( token const &t ){ return t.type == token_type::ws; } ), expr.end() );
@@ -326,33 +352,40 @@ class phase4
 		
 		pen = expr.begin(); // 5th pass (!): actually evaluate.
 		bool result = rudimentary_evaluate( pen );
-		if ( pen != expr.end() - 1 ) throw error( * pen, "Expected end of expression." );
+		this->template diagnose< diagnose_policy::pass, error >( pen != expr.end() - 1, * pen, "Expected end of expression." );
 		return result;
 	}
-	void replace_defined_operator( tokens &expr ) const {
+	void replace_defined_operator( tokens &expr ) {
 		for ( auto pen = expr.begin(); pen != expr.end(); ++ pen ) { // 2nd pass: evaluate defined( id ) operator.
 			if ( * pen == pp_constants::defined_operator ) {
-				* pen = pp_constants::space;
-				if ( pp_constants::skip_space( ++ pen, expr.end() ) == expr.end() ) bad_defined_expr:
-					throw error( pen[ -1 ], "defined operator does not match \"defined <id>\" "
-												"or \"defined ( <id> )\" (§16.1/1)." );
-				bool paren = * pen == pp_constants::lparen;
-				if ( ( paren && pp_constants::skip_space( ++ pen, expr.end() ) == expr.end() )
-					|| pen->type != token_type::id ) goto bad_defined_expr;
-				// perform the actual operation
-				pen->assign_content( macros.count( pen->s )? pp_constants::one : pp_constants::zero );
+				tokens::iterator defined_it = pen, arg_it;
 				
-				if ( paren && ( pp_constants::skip_space( ++ pen, expr.end() ) == expr.end()
-					|| * pen != pp_constants::rparen ) ) goto bad_defined_expr;
+				if ( this->template diagnose< diagnose_policy::pass, error >(
+					! ( ( arg_it = pp_constants::skip_space( ++ pen, expr.end() ) ) != expr.end() && arg_it->type == token_type::id ) // defined x
+					&& ! ( * pen == pp_constants::lparen // defined ( x )
+						&& ( arg_it = pp_constants::skip_space( ++ pen, expr.end() ) ) != expr.end() && arg_it->type == token_type::id
+						&& pp_constants::skip_space( ++ pen, expr.end() ) != expr.end() && * pen == pp_constants::rparen
+					),
+					util::make_implicit_thunk( [&]{ return pen == expr.end()? expr.back() : * pen; } ),
+					"defined operator does not match \"defined <identifier>\" or \"defined ( <identifier> )\" (§16.1/1, 4)." ) )
+					continue; // Let subsequent pass macro-replace it or clobber to 0.
+				
+				defined_it->assign_content( macros.count( arg_it->s )? pp_constants::one : pp_constants::zero ); // Exception safety: copies a string.
+				expr.erase( defined_it + 1, pen + 1 );
+				pen = defined_it;
 			}
 		}
 	}
 	
-	void handle_header( tokens::iterator pen ) {
+	struct header_access { token source; std::string path; token presumed; };
+	header_access header_access_from_input( tokens::iterator pen ) {
+		CPLUS_FINALLY (
+			input.resize( 1 );
+		)
 		using pp_constants::skip_space;
 		
-		if ( skip_space( ++ pen, input.end() ) == input.end() )
-			throw error( input.front(), "Expected header name." );
+		this->template diagnose< diagnose_policy::fatal, error >( skip_space( ++ pen, input.end() ) == input.end(),
+			input.front(), "Expected header name." );
 		
 		std::string name;
 		if ( pen->type == token_type::header_name ) name = pen->s;
@@ -365,17 +398,22 @@ class phase4
 			skip_space( end, decltype( end )( pen ) ); // skip trailing space
 			auto name_begin = pen;
 			while ( pen != end.base() ) {
-				name += pen ++ ->s;
+				if ( pen->type == token_type::ws ) name += ' ';
+				else name += pen ++ ->s;
+			}
+			if ( name.back() == ' ' ) {
+				name.pop_back();
+				-- pen;
 			}
 			-- pen;
-			if ( name.front() != '<' || name.back() != '>' || name.size() == 2 ) throw error( * pen,
+			this->template diagnose< diagnose_policy::fatal, error >( name.front() != '<' || name.back() != '>' || name.size() == 2, * pen,
 				"Expected a sequence of tokens between \"<\" and \">\"." );
 			pen = name_begin + 1;
 		}
 		
 		bool use_user_paths = name.front() == '"';
 		name = name.substr( 1, name.size() - 2 );
-		if ( name.empty() ) throw error( * pen, "Empty header name." );
+		this->template diagnose< diagnose_policy::fatal, error >( name.empty(), * pen, "Empty header name." );
 		
 		std::filebuf header;
 		if ( name[0] == '/' ) { // it looks like an absolute path. TODO, deal with other path separators
@@ -395,7 +433,9 @@ class phase4
 		if ( ! header.is_open() ) {
 			std::vector< string > const *path_sets[] = { & this->get_config().user_paths, & this->get_config().system_paths };
 			for ( auto path_set = use_user_paths? & path_sets[0] : & path_sets[1];
-				path_set != std::end( path_sets ); ++ path_set ) {
+				! this->template diagnose< diagnose_policy::fatal, error >(
+					path_set == std::end( path_sets ), * pen, "File not found." );
+				++ path_set ) {
 				for ( std::string path : ** path_set ) {
 					path = path + name;
 					if ( header.open( path.c_str(), std::ios::in | std::ios::binary ) ) {
@@ -404,46 +444,55 @@ class phase4
 					}
 				}
 			}
-			throw error( * pen, "File not found." );
 		}
 	opened:
-		token name_r = pen->reallocate( this->get_config().macro_pool ),
-			name_s{ token_type::string_lit, string{ "\"", this->get_config().macro_pool }, * pen };
-		for ( char c : name ) {
-			if ( c == '\\' || c == '"' ) name_s.s += '\\';
-			name_s.s += c;
+		header_access ret {
+			pen->reallocate( this->get_config().macro_pool ), // Source token.
+			std::move( name ), // Access path.
+			{ token_type::string_lit, { "\"", this->get_config().macro_pool } } // Stringized presumed __FILE__ name, filled in below.
+		};
+		ret.presumed.construct::operator = ( ret.source );
+		for ( char c : ret.path ) {
+			if ( c == '\\' || c == '"' ) ret.presumed.s += '\\';
+			ret.presumed.s += c;
 		}
-		name_s.s += '"';
+		ret.presumed.s += '"';
 		
-		if ( ( pen->type == token_type::string_lit || pen->type == token_type::header_name )
-			&& skip_space( ++ pen, input.end() ) != input.end() ) throw error( input.back(), "Extra tokens after header name." );
-		input.resize( 1 );
+		this->template diagnose< diagnose_policy::pass, error >( ( pen->type == token_type::string_lit || pen->type == token_type::header_name )
+			&& skip_space( ++ pen, input.end() ) != input.end(), input.back(), "Extra tokens after header name." );
 		
-		auto context_backup = this->presumed;
-		this->presumed = macro_context_info::presumptions{ name_s };
+		CPLUS_DO_FINALLY // Trim input buffer to whitespace accumulator.
+		return ret;
+	}
+	
+	void handle_header( header_access access ) {
+		auto guard_it = guarded_headers.find( access.presumed.s );
+		if ( guard_it != guarded_headers.end()
+			&& this->template diagnose< diagnose_policy::pass, error >(
+				evaluate_condition( guard_it->second.begin(), guard_it->second.end() ), // Use condition result for flow control.
+				access.source, "Warning: multiply including guarded header" ) )
+			return;
 		
-		auto guard = guarded_headers.find( name_s.s );
-		if ( guard == guarded_headers.end() || evaluate_condition( guard->second.begin(), guard->second.end() ) ) {
-			if ( guard != guarded_headers.end() ) {
-				this->pass_or_throw< error >( name_r, "Warning: multiply including guarded header" );
-			}
-			auto guard_detect_backup = std::move( guard_detect );
-			guard_detect = { true, name_s.s, pp_constants::guard_default, conditional_depth };
-			
-			state = entering;
-			
-			instantiate( std::make_shared< inclusion >( name, name_r ),
-				pile< phase1_2, phase3 >( std::ref( * this ) ) );
-			
-			state = entering;
-			
-			if ( guard_detect.valid && guard_detect.depth == conditional_depth ) {
-				guard_current_header();
-			}
+		auto context_backup = std::move( this->presumed );
+		auto guard_detect_backup = std::move( guard_detect );
+		CPLUS_FINALLY(
+			this->presumed = std::move( context_backup ); // Restore __FILE__, __LINE__, and guard detection of calling header.
 			guard_detect = std::move( guard_detect_backup );
+			
+			state = entering; // Re-enter calling header.
+		)
+		this->presumed = macro_context_info::presumptions{ std::move( access.presumed ) };
+		guard_detect = { true, this->presumed.filename.s, pp_constants::guard_default, conditional_depth };
+		
+		state = entering;
+		instantiate( std::make_shared< inclusion >( std::move( access.path ), std::move( access.source ) ),
+			pile< phase1_2, phase3 >( std::ref( * this ) ) );
+		
+		if ( guard_detect.valid && guard_detect.depth == conditional_depth ) {
+			guard_current_header();
 		}
 		
-		this->presumed = context_backup;
+		CPLUS_DO_FINALLY
 	}
 	void guard_current_header()
 		{ guarded_headers.insert( { guard_detect.name, std::move( guard_detect.guard ) } ); }
@@ -476,7 +525,7 @@ public:
 			pragma_handler_list pragma_handlers() {
 				static pragma_handler_list ret = {
 					{ "once", pragma_function( [this]( tokens &&in ) {
-						if ( ! in.empty() ) throw error( in[ 0 ], "This directive does not take an argument." );
+						if ( ! in.empty() ) throw error( in[ 0 ], "This directive does not take an argument." ); // diagnose() not available in a pragma handler
 						this->master->guard_detect.guard = pp_constants::guard_default;
 						this->master->guard_current_header();
 					} ) }
@@ -489,9 +538,6 @@ public:
 	
 	void operator() ( token &&in ) {
 		using pp_constants::skip_space;
-		
-		if ( in == pp_constants::variadic && std::find( input.begin(), input.end(), pp_constants::define_directive ) == input.end() )
-			throw error( in, "The identifier __VA_ARGS__ is reserved (§16.3/5)." );
 		
 		switch ( state ) {
 		case entering: // one-shot state simply inserts whitespace #line directive if preserving space
@@ -506,14 +552,15 @@ public:
 			state = normal;
 		
 		case normal:
+			this->template diagnose< diagnose_policy::pass, error >( in == pp_constants::variadic, in, "The identifier __VA_ARGS__ is reserved (§16.3/5)." );
+			
 			if ( in.type != token_type::ws ) {
 				if ( guard_detect.depth == conditional_depth // anything besides a directive outside guard
 						&& ( in.type != token_type::directive || input.size() > 1 ) ) {
 					guard_detect.valid = false; // cancels guard detection
 				}
-				if ( in.type == token_type::directive ) { // consume and discard the #
-					if ( this->paren_depth != 0 )
-						throw error( in, "A macro invocation cannot span a directive (§16.3/11)." );
+				if ( in.type == token_type::directive // consume and discard the #
+					&& ! this->template diagnose< diagnose_policy::pass, error >( this->paren_depth != 0, in, "A macro invocation cannot span a directive (§16.3/11)." ) ) {
 					
 					if ( input.empty() ) input.push_back( pp_constants::placemarker ); // ensure there is whitespace before the directive
 					this->pass( std::make_move_iterator( input.begin() ), std::make_move_iterator( input.end() - 1 ) ); // flush uncalled function
@@ -537,6 +584,8 @@ public:
 				return (*this)( std::move( in ) ); // "retry" the newline token
 			} else {
 				input.push_back( std::move( in ) );
+				this->template diagnose< diagnose_policy::pass, error >( input.back() == pp_constants::variadic && input[ 1 ] != pp_constants::define_directive,
+					in, "The identifier __VA_ARGS__ is reserved (§16.3/5)." );
 				return;
 			}
 		
@@ -565,8 +614,8 @@ public:
 					state = entering;
 					
 					auto pen = input.begin() + 2;
-					if ( skip_space( pen, input.end() ) != input.end() ) // Standard is unclear on this requirement.
-						throw error( * pen, "This directive takes no arguments." );
+					this->template diagnose< diagnose_policy::pass, error >( skip_space( pen, input.end() ) != input.end(), // Standard is unclear on this requirement.
+						util::make_implicit_thunk( [&]{ return * pen; } ), "This directive takes no arguments." );
 				} else if ( directive == pp_constants::elif_directive && state == skip_if ) {
 					handle_directive();
 				}
@@ -579,9 +628,10 @@ public:
 	}
 	
 	void flush() {
-		if ( state == skip_if || state == skip_else || conditional_depth != 0 )
-			throw error( input.front(), "Expected #endif." );
+		this->template diagnose< diagnose_policy::pass, error >( state == skip_if || state == skip_else || conditional_depth != 0,
+			input.empty()? construct() : input.back(), "Expected #endif." );
 		if ( state == directive ) input.clear(); // last line was directive terminated with backslash.
+		state = normal;
 	}
 };
 
@@ -621,14 +671,15 @@ public:
 							} else this->pass( std::move( in ) );
 							return;
 							
-		case open_paren:	state = string;
-							if ( in != pp_constants::lparen )
-								throw error( in, "_Pragma operand must be in parentheses (§16.9)." );
+		case open_paren:	state = normal;
+							this->template diagnose< diagnose_policy::fatal, error >( in != pp_constants::lparen,
+								in, "_Pragma operand must be in parentheses (§16.9)." );
+							state = string;
 							return;
 		case string:	{
 							state = close_paren;
-							if ( in.type != token_type::string_lit )
-								throw error( in, "_Pragma operand must be a string (§16.9)." );
+							this->template diagnose< diagnose_policy::fatal, error >( in.type != token_type::string_lit,
+								in, "_Pragma operand must be a string (§16.9)." );
 							
 							tokens args;
 							instantiate( std::make_shared< raw_text >( destringize( in.s ), in ),
@@ -653,13 +704,13 @@ public:
 						}
 		case close_paren:	state = normal;
 							pragma_token = token();
-							if ( in != pp_constants::rparen )
-								throw error( in, "Only one argument to _Pragma allowed (§16.9)." );
+							this->template diagnose< diagnose_policy::pass, error >( in != pp_constants::rparen,
+								in, "Only one argument to _Pragma allowed (§16.9)." );
 							return;
 		}
 	}
 	void flush()
-		{ if ( state != normal ) throw error( pragma_token, "Unterminated _Pragma." ); }
+		{ this->template diagnose< diagnose_policy::pass, error >( state != normal, pragma_token, "Unterminated _Pragma." ); }
 };
 
 }
