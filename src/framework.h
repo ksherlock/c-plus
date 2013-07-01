@@ -347,7 +347,7 @@ template< typename instantiation_derived >
 construct const *construct::advance_to_source() const {
 	if ( ! source ) return nullptr;
 	auto ret = dynamic_cast< instantiation_derived const * >( source.get() );
-	return ret? this : source->get_parent< instantiation_derived >();
+	return ret? this : source->advance_to_source< instantiation_derived >();
 }
 
 // Error reporting format.
