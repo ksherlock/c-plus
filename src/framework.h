@@ -209,7 +209,7 @@ public:
 	typename std::enable_if< std::is_void< decltype( cplus::pass( std::declval< derived_stage & >(), std::declval< exception_type >() ) ) >::value
 								&& policy == diagnose_policy::pass, bool >::type
 	diagnose( bool condition, args && ... a ) {
-		if ( condition ) { std::cerr << "passing\n"; pass< pass_policy::mandatory >( exception_type( std::forward< args >( a ) ... ) ); }
+		if ( condition ) pass< pass_policy::mandatory >( exception_type( std::forward< args >( a ) ... ) );
 		return condition;
 	}
 	
@@ -217,7 +217,7 @@ public:
 	typename std::enable_if< ! std::is_void< decltype( cplus::pass( std::declval< derived_stage & >(), std::declval< exception_type >() ) ) >::value
 								|| policy == diagnose_policy::fatal, bool >::type
 	diagnose( bool condition, args && ... a ) {
-		if ( condition ) { std::cerr << "throwing\n"; throw exception_type( std::forward< args >( a ) ... ); }
+		if ( condition ) throw exception_type( std::forward< args >( a ) ... );
 		return false;
 	}
 };
@@ -351,15 +351,18 @@ construct const *construct::advance_to_source() const {
 }
 
 // Error reporting format.
-struct error : std::runtime_error {
+class error_base : public std::runtime_error {
 	std::unique_ptr< construct const, void (*)( construct const * ) > p;
-	
+protected:
 	template< typename c >
-	error( c &&pos, char const *what )
+	error_base( c pos, char const *what )
 		: std::runtime_error( what ),
-		p( new typename std::remove_reference< c >::type( std::forward< c >( pos ) ), []( construct const *p )
-			{ delete static_cast< typename std::decay< c >::type const * >( p ); } ) {}
+		p( new c( std::move( pos ) ), []( construct const *p ){ delete static_cast< c const * >( p ); } ) {}
+public:
+	virtual construct const &offender() const { return * p; } // Virtual dispatch is somewhat useless. Derived classes should call this and static_cast the result.
 };
+struct error : public error_base
+	{ error( construct pos, char const * what ) : error_base( std::move( pos ), what ) {} };
 
 struct raw_char : construct {
 	std::uint8_t c;
