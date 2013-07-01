@@ -309,7 +309,7 @@ class phase4
 				
 				if ( line_number != 0 ) { // User may set filename only using #line 0 "name".
 					this->presumed.line_displacement = line_number - physical_line - 1;
-					state = entering; // print new file name
+					state = entering; // print new line number
 				}
 				if ( skip_space( ++ pen, input.end() ) != input.end() ) {
 					this->template diagnose< diagnose_policy::fatal, error >( pen->type != token_type::string_lit || pen->s.front() != '"' || pen->s.back() != '"',
@@ -479,7 +479,7 @@ class phase4
 			this->presumed = std::move( context_backup ); // Restore __FILE__, __LINE__, and guard detection of calling header.
 			guard_detect = std::move( guard_detect_backup );
 			
-			state = entering; // Re-enter calling header.
+			if ( state == normal ) state = entering; // Re-enter calling header.
 		)
 		this->presumed = macro_context_info::presumptions{ std::move( access.presumed ) };
 		guard_detect = { true, this->presumed.filename.s, pp_constants::guard_default, conditional_depth };
