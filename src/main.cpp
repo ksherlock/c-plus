@@ -57,7 +57,7 @@ void point_at_substitution( construct const &t ) {
 	point_at( t.get_source< macro_substitution >() );
 	if ( t.get_source< macro_replacement >().get_parent() ) { // don't point at internal macros such as "defined" or "#"
 		std::cerr << "in macro parameter\n";
-		point_at_replacement( t.get_source< macro_replacement >(), false );
+		point_at_replacement( t, false );
 	}
 }
 
