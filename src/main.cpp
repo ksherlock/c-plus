@@ -78,8 +78,8 @@ int main( int argc, char *argv[] ) {
 			[]( cplus::token &&token ){ std::fwrite( token.s.c_str(), 1, token.s.size(), stdout ); std::fwrite( "·", 1, std::strlen( "·" ), stdout ); },
 			[]( cplus::error && err ) {
 				std::clog << err.what() << '\n';
-				if ( ! err.p->get_parent() ) std::cerr << "(no source info)\n";
-				point_at( static_cast< token const & >( * err.p ) );
+				if ( ! err.offender().get_parent() ) std::cerr << "(no source info)\n";
+				point_at( static_cast< token const & >( err.offender() ) );
 			}
 		)
 	);
