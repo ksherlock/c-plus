@@ -102,4 +102,5 @@ int main( int argc, char *argv[] ) {
 	
 	cplus::pass( std::istreambuf_iterator< char >{ std::cin }, std::istreambuf_iterator< char >{}, pile );
 	finalize( pile );
+	finalize( common_pile );
 }
