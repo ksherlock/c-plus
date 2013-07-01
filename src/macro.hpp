@@ -433,7 +433,10 @@ macro_context_info::name_map::value_type normalize_macro_definition( tokens inpu
 		replacement.push_back( std::move( pen ++ ->reallocate( macro_pool ) ) ); // save ")"
 		nargs = replacement.size(); // includes ")" so nonzero if function-like
 		
-	} else replacement.push_back( space ); // synthesize a space if list is truly empty
+	} else {
+		replacement.push_back( space ); // synthesize a space if list is truly empty
+		replacement.back().construct::operator = ( pen == input.end()? pen[ -1 ] : * pen );
+	}
 	
 	if ( skip_space( pen, input.end() ) != input.end() && is_concat( * pen ) ) bad_cat:
 		throw error( * pen, "Concatenation (##) operator may not appear at beginning or end of a macro (§16.3.3/1)." );
@@ -453,14 +456,17 @@ macro_context_info::name_map::value_type normalize_macro_definition( tokens inpu
 			throw error( * pen, "The identifier __VA_ARGS__ is reserved (§16.3/5)." );
 		
 		replacement.push_back( pen ++ ->reallocate( macro_pool ) );
-		replacement.push_back( placemarker );
 		
-		if ( pen == input.end() || pen->type != token_type::ws ) continue;
-		replacement.back().reallocate( macro_pool );
-		do {
+		if ( pen == input.end() || pen->type != token_type::ws ) {
+			replacement.push_back( placemarker );
+			replacement.back().construct::operator = ( replacement.end()[ -2 ] );
+			continue;
+		}
+		replacement.push_back( pen ++ ->reallocate( macro_pool ) );
+		while ( pen != input.end() && pen->type == token_type::ws ) {
 			replacement.back().s += pen ++ ->s; // condense whitespace
-		} while ( pen != input.end() && pen->type == token_type::ws );
-		if ( pen == input.end() ) replacement.back() = placemarker; // discard whitespace after replacement list
+		}
+		if ( pen == input.end() ) replacement.back().assign_content( placemarker ); // discard whitespace after replacement list
 	}
 	
 	if ( is_concat( replacement.back() ) )
