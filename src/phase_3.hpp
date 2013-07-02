@@ -148,7 +148,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 					pass();
 				}
 				token.construct::operator = ( in );
-				token.s = pp_constants::newline.s;
+				token.assign_content( pp_constants::newline );
 				if ( this->get_config().preserve_space ) token = token.reallocate( this->get_config().stream_pool ); // re-open to append
 				in_directive = false;
 				state = after_newline;
@@ -159,6 +159,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 			if ( char_in_set( char_set::space, c ) ) {
 				if ( token.s.empty() ) {
 					token.construct::operator = ( in );
+					token.type = ws; // In case token.type = state_after_space assigned after_newline.
 					state = space_run;
 				}
 				if ( this->get_config().preserve_space ) {
