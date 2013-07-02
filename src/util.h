@@ -144,36 +144,6 @@ template< typename bound >
 implicit_thunk< typename std::decay< bound >::type > make_implicit_thunk( bound &&f )
 	{ return { std::forward< bound >( f ) }; }
 
-template< typename output_iterator >
-class limit_range_ftor {
-	std::size_t count, max;
-public:
-	output_iterator base;
-	
-	template< typename ... args >
-	limit_range_ftor( args && ... a )
-		: count( 0 ), max( 0 ), base( std::forward< args >( a ) ... ) {}
-	
-	std::size_t reset( std::size_t new_max = 0 ) {
-		std::size_t old_count = count;
-		count = 0;
-		max = new_max;
-		return old_count;
-	}
-	
-	template< typename value_type >
-	auto operator() ( value_type &&o ) ->
-	typename mention< decltype( * base ++ = std::forward< value_type >( o ) ) >::type {
-		if ( max != 0 && count == max ) throw std::range_error( "sequence too long" );
-		++ count;
-		* base ++ = std::forward< value_type >( o );
-	}
-};
-
-template< typename output_iterator >
-limit_range_ftor< output_iterator >
-limit_range( output_iterator &&iter ) { return limit_range_ftor< output_iterator >{ std::move( iter ) }; }
-
 class utf8_convert {
 	char32_t min;
 	int len;

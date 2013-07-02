@@ -45,10 +45,10 @@ public:
 	
 	void flush() {
 		replace_object_completely();
-		if ( paren_depth != 0 ) {
-			throw error( input[ input.front().type == token_type::ws ], "Unterminated macro invokation." );
+		if ( ! this->template diagnose< diagnose_policy::pass, error >( paren_depth != 0,
+			util::make_implicit_thunk( [&]{ return input[ input.front().type == token_type::ws ]; } ), "Unterminated macro invokation." ) ) {
+			this->template diagnose< diagnose_policy::pass, error >( input.size() > 3 /* space, name, space */, input.back(), "ICE: too much input at flush." );
 		}
-		if ( input.size() > 3 ) throw error( input.back(), "ICE: too much input at flush." );
 		this->pass( std::make_move_iterator( input.begin() ), std::make_move_iterator( input.end() ) );
 		input.clear();
 		definition = nullptr;
@@ -157,6 +157,7 @@ private:
 		tokens::iterator input_pen = input.begin();
 		bool invocation_leading_space = skip_space( input_pen );
 		common.callers.push_back( std::move( * input_pen ) ); // Register in call stack before rescanning.
+		CPLUS_FINALLY( common.callers.pop_back(); )
 		if ( function_like ) skip_space( ++ input_pen ); // ignore space between name and paren
 		
 		// save macro name and arguments, or special replacement list, in persistent instantiation object
@@ -189,15 +190,18 @@ private:
 			}
 			
 			-- arg_pen;
-			if ( info != args_info.end() ) throw error( * arg_pen, "Too few arguments to macro." );
+			if ( this->template diagnose< diagnose_policy::pass, error >( info != args_info.end(), * arg_pen, "Too few arguments to macro." ) ) {
+				std::fill( info, args_info.end(), arg_info{ arg_pen, arg_pen } );
+			}
 			if ( arg_pen != inst->args.end() - 1 ) {
 				if ( args_info.size() == 0 ) {
 					skip_space( ++ arg_pen );
-					if ( arg_pen != inst->args.end() - 1 ) throw error( * arg_pen, "Macro does not accept any argument." );
-				} else if ( def[ args_info.size() - 1 ] == pp_constants::variadic ) {
+					this->template diagnose< diagnose_policy::pass, error >( arg_pen != inst->args.end() - 1, * arg_pen, "Macro does not accept any argument." );
+				} else if ( ! this->template diagnose< diagnose_policy::pass, error >( // If there isn't an error due to not being a variadic macro, handle variadic list.
+					def[ args_info.size() - 1 ] != pp_constants::variadic, * arg_pen, "Too many arguments to macro." ) ) {
 					-- info;
 					goto extend_variadic; // continue from where the comma broke the loop
-				} else throw error( * arg_pen, "Too many arguments to macro." );
+				}
 			}
 		}
 		
@@ -205,10 +209,18 @@ private:
 		auto & local = * this;
 		
 		// Use a local copy of phase 3 to generate tokens one at a time as intermediate results.
-		token acc[ 2 ]; // [0] is LHS, [1] is RHS from stringize or LHS recursion stop
-		auto acc_limiter( util::limit_range( &* acc ) ); // actual range specified at each use
-		auto const acc_it = std::function< void( token && ) >( [&]( token &&t )
-			{ if ( t.type != token_type::ws ) acc_limiter( std::move( t ) ); } ); // filter out whitespace
+		token acc[ 2 ], *acc_pen = acc; // [0] is LHS, [1] is RHS from stringize or LHS recursion stop
+		bool acc_full = false;
+		auto acc_pass = std::function< void( token && ) >( [&]( token && t ) {
+			if ( t.type == token_type::ws ) return; // Discard trailing newline from tokenizer flush. Would be nice to trap other whitespace.
+			
+			CPLUS_FINALLY ( acc_full = true; )
+			if ( ! acc_full ) ++ acc_pen;
+			else this->pass( std::move( acc_pen[ -1 ] ) ); // Passing ahead of the overflow diagnostic preserves consistency between throwing and not.
+			acc_pen[ -1 ] = std::move( t );
+			this->template diagnose< diagnose_policy::pass, error >( acc_full, t, "Token catenation (##) did not produce only one result token." );
+			CPLUS_DO_FINALLY
+		} );
 		
 		token const *leading_space = nullptr;
 		for ( auto pen = def.begin() + args_info.size() + 1 /* skip ")" or " " */; pen != def.end(); leading_space = &* pen - 1  ) {
@@ -225,10 +237,10 @@ private:
 			if ( pp_constants::is_concat( * pen ) ) {
 				leading_space = nullptr; // ## operator consumes space
 			} else if ( ! pp_constants::is_stringize( * pen ) || ! function_like ) { // lead is _neither_ ## _nor_ #
-				pass( std::make_move_iterator( acc ), std::make_move_iterator( acc_limiter.base ), local );
+				pass( std::make_move_iterator( acc ), std::make_move_iterator( acc_pen ), local );
 				acc[ 1 ] = token(); // be sure to invalidate recursion stop in acc[1]
-				acc_limiter.base = acc;
-				* acc_limiter.base ++ = instantiate_component( inst, pen - def.begin() );
+				acc_pen = acc;
+				* acc_pen ++ = instantiate_component( inst, pen - def.begin() );
 				pen += 2; // Consume this non-operator token and advance past ws (may return to it later).
 				leading_token = true;
 			}
@@ -245,46 +257,49 @@ private:
 				pen += 2; // replacement list doesn't end with # or the space following #
 				stringize = true;
 				if ( ! concat ) { // flush buffered input if this isn't RHS of ##
-					pass( std::make_move_iterator( acc ), std::make_move_iterator( acc_limiter.base ), local );
+					pass( std::make_move_iterator( acc ), std::make_move_iterator( acc_pen ), local );
 					acc[ 1 ] = token(); // be sure to invalidate recursion stop in acc[1]
 					if ( leading_space ) local( * leading_space );
 				}
-				acc_limiter.base = acc + concat; // discard and overwrite possible recursion stop
+				acc_pen = acc + concat; // discard and overwrite possible recursion stop
 				
 				auto arg = args_info[ std::find( def.begin(), def.end(), * pen ) - def.begin() ];
 				arg.trim_begin();
 				arg.trim_end();
 				
-				try {
-					string s( 1, '\"' );
-					for ( auto pen = arg.begin; pen != arg.end; ++ pen ) {
-						if ( pen->type == token_type::ws ) {
-							if ( token_semantic_equal( * pen, pp_constants::space ) ) s += ' ';
-							continue;
-						}
-						for ( std::uint8_t c : pen->s ) {
-							if ( ( pen->type == token_type::string_lit || pen->type == token_type::char_lit )
-								&& ( c == '"' || c == '\\' // escape quotes and backslashes in strings, incl. hidden in UCNs
-									|| c >= 0xC0 || ( c < 0x80 && ! char_in_set( char_set::basic_source, c ) ) ) ) {
+				string s( 1, '\"' );
+				for ( auto pen = arg.begin; pen != arg.end; ++ pen ) {
+					if ( pen->type == token_type::ws ) {
+						if ( token_semantic_equal( * pen, pp_constants::space ) ) s += ' ';
+						continue;
+					}
+					for ( std::uint8_t c : pen->s ) {
+						if ( pen->type == token_type::string_lit || pen->type == token_type::char_lit ) {
+							if ( c == '"' || c == '\\' // escape quotes and backslashes in strings, incl. hidden in UCNs
+								|| c >= 0xC0 || ( c < 0x80 && ! char_in_set( char_set::basic_source, c ) ) ) {
 								s += '\\';
 							}
-							s += c;
+							if ( this->template diagnose< diagnose_policy::pass, error >( c == '\n', * pen,
+								"Raw string contains a newline, which is invalid in the non-raw result of the # operator." ) ) {
+								s += "\\\\n";
+								continue;
+							}
 						}
+						s += c;
 					}
-					s += '\"';
-					
-					acc_limiter.reset( 1 );
-					instantiate( std::make_shared< raw_text >( s,
-						instantiate_component( std::make_shared< macro_substitution >( std::move( * pen ), arg.begin, arg.end ), 0 )
-					), pile< phase3 >( common.token_config, acc_it ) );
-					pen += 2; // consume argument of #
-					
-				} catch ( std::range_error & ) {
-					goto stringize_wrong_count;
 				}
-				if ( acc_limiter.reset() != 1 || acc_limiter.base[-1].type != token_type::string_lit )
-				stringize_wrong_count:
-					throw error( arg.begin[ 0 ], "Stringize (#) did not produce one (1) result string." );
+				s += '\"';
+				
+				acc_full = false;
+				instantiate( std::make_shared< raw_text >( s,
+					instantiate_component( std::make_shared< macro_substitution >( std::move( * pen ), arg.begin, arg.end ), 0 )
+				), pile< phase3 >( common.token_config, acc_pass ) );
+				pen += 2; // consume argument of #
+				
+				if ( this->template diagnose< diagnose_policy::pass, error >( ! acc_full || acc_pen[-1].type != token_type::string_lit,
+					arg.begin[ 0 ], "Stringize (#) did not produce a valid result string (§16.3.2/2)." ) ) { // How to test this? http://stackoverflow.com/q/17416256/153285
+					if ( ! acc_full ) * acc_pen ++ = pp_constants::placemarker;
+				}
 			}
 			
 			if ( concat ) { //													=================== CONCATENATE ===
@@ -314,39 +329,35 @@ private:
 				
 				if ( leading_space ) local( * leading_space ); // preserve leading space
 				
-				acc_limiter.base = acc; // perform the paste into the intermediate result register
+				acc_pen = acc; // perform the paste into the intermediate result register
 				if ( begins[lhs] == ends[lhs] ) {
 					if ( begins[rhs] == ends[rhs] ) { // both sides are empty; produce a placemarker token
-						* acc_limiter.base ++ = pp_constants::placemarker;
+						* acc_pen ++ = pp_constants::placemarker;
 						continue;
 					}
 					pass( begins[rhs], ends[rhs] - 1, local ); // LHS is empty; output the RHS
-					* acc_limiter.base ++ = std::move( ends[rhs][ -1 ] ); // just save the last token as intermediate result
+					* acc_pen ++ = std::move( ends[rhs][ -1 ] ); // just save the last token as intermediate result
 					if ( ! stringize && stripped_stops[rhs] ) {
-						* acc_limiter.base ++ = pp_constants::recursion_stop; // preserve stopper
+						* acc_pen ++ = pp_constants::recursion_stop; // preserve stopper
 					}
 					continue;
 				}
 				pass( begins[lhs], ends[lhs] - 1, local ); // flush the tokens preceding the result
 				
 				if ( begins[rhs] == ends[rhs] ) { // RHS is empty; already sent the LHS
-					* acc_limiter.base ++ = std::move( ends[lhs][ -1 ] );
+					* acc_pen ++ = std::move( ends[lhs][ -1 ] );
 					if ( stripped_stops[lhs] ) {
-						* acc_limiter.base ++ = pp_constants::recursion_stop; // preserve stopper
+						* acc_pen ++ = pp_constants::recursion_stop; // preserve stopper
 					}
 					continue;
 				}
 				
-				try {
-					acc_limiter.reset( 1 );
-					instantiate( std::make_shared< raw_text >( ends[lhs][ -1 ].s + begins[rhs][ 0 ].s, ends[lhs][ -1 ] ), 
-						pile< phase3 >( common.token_config, acc_it ) );
-				} catch ( std::range_error & ) {
-					goto catenate_wrong_count;
+				acc_full = false;
+				instantiate( std::make_shared< raw_text >( ends[lhs][ -1 ].s + begins[rhs][ 0 ].s, ends[lhs][ -1 ] ), 
+					pile< phase3 >( common.token_config, acc_pass ) );
+				if ( this->template diagnose< diagnose_policy::pass, error >( ! acc_full, begins[rhs][ 0 ], "Token catenation (##) did not produce any result token." ) ) {
+					* acc_pen ++ = pp_constants::placemarker;
 				}
-				if ( acc_limiter.reset() != 1 ) catenate_wrong_count:
-					throw error( begins[rhs][ 0 ], "Catenating tokens did not produce a single result token." );
-				
 				while ( ++ begins[rhs] != ends[rhs] && * begins[rhs] == pp_constants::recursion_stop ) ; // re-evaluate recursion
 				
 				if ( begins[rhs] != ends[rhs] ) {
@@ -354,37 +365,39 @@ private:
 					pass( begins[rhs], ends[rhs] - 1, local );
 					acc[ 0 ] = ends[rhs][ -1 ]; // get a new intermediate result from end of RHS
 					if ( stripped_stops[rhs] ) {
-						* acc_limiter.base ++ = pp_constants::recursion_stop; // preserve stopper
+						* acc_pen ++ = pp_constants::recursion_stop; // preserve stopper
 					}
 				}
 			
 			} else if ( leading_token ) { //						================================ SUBSTITUTE ===
 				if ( leading_space ) local( * leading_space );
-				-- acc_limiter.base; // don't leave intermediate result
+				-- acc_pen; // don't leave intermediate result
 				
 				auto param = std::find( def.begin(), def.begin() + args_info.size(), acc[ 0 ] );
 				if ( param == def.begin() + args_info.size() ) {
 					local( std::move( acc[ 0 ] ) ); // common case - copy from replacement list to output
 				} else {
 					auto caller_self = common.callers.back();
-					common.callers.pop_back(); // evaluate argument in caller's context, i.e. current name is not recursion-stopped
+					common.callers.pop_back(); // evaluate argument in caller's context, i.e. current name is not recursion-
+					CPLUS_FINALLY( common.callers.push_back( caller_self ); )
 					
 					arg_info arg = args_info[ param - def.begin() ];
 					instantiate( std::make_shared< macro_substitution >( std::move( acc[ 0 ] ), arg.begin, arg.end ),
 						pile< macro_context >( common, std::function< void( token && ) >( [&]( token &&in ) {
 							common.callers.push_back( caller_self ); // restore current context for rescanning
+							CPLUS_FINALLY( common.callers.pop_back(); )
 							local( std::move( in ) );
-							common.callers.pop_back();
+							CPLUS_DO_FINALLY
 						} ) )
 					 );
 					
-					common.callers.push_back( caller_self );
+					CPLUS_DO_FINALLY
 				}
 			}
 		}
-		pass( std::make_move_iterator( acc ), std::make_move_iterator( acc_limiter.base ), local );
+		pass( std::make_move_iterator( acc ), std::make_move_iterator( acc_pen ), local );
 		replace_object_completely();
-		common.callers.pop_back();
+		CPLUS_DO_FINALLY
 	}
 };
 
