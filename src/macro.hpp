@@ -205,9 +205,6 @@ private:
 			}
 		}
 		
-		// obtain iterator access to self
-		auto & local = * this;
-		
 		// Use a local copy of phase 3 to generate tokens one at a time as intermediate results.
 		token acc[ 2 ], *acc_pen = acc; // [0] is LHS, [1] is RHS from stringize or LHS recursion stop
 		bool acc_full = false;
@@ -237,7 +234,7 @@ private:
 			if ( pp_constants::is_concat( * pen ) ) {
 				leading_space = nullptr; // ## operator consumes space
 			} else if ( ! pp_constants::is_stringize( * pen ) || ! function_like ) { // lead is _neither_ ## _nor_ #
-				pass( std::make_move_iterator( acc ), std::make_move_iterator( acc_pen ), local );
+				pass( std::make_move_iterator( acc ), std::make_move_iterator( acc_pen ), (*this) );
 				acc[ 1 ] = token(); // be sure to invalidate recursion stop in acc[1]
 				acc_pen = acc;
 				* acc_pen ++ = instantiate_component( inst, pen - def.begin() );
@@ -257,9 +254,9 @@ private:
 				pen += 2; // replacement list doesn't end with # or the space following #
 				stringize = true;
 				if ( ! concat ) { // flush buffered input if this isn't RHS of ##
-					pass( std::make_move_iterator( acc ), std::make_move_iterator( acc_pen ), local );
+					pass( std::make_move_iterator( acc ), std::make_move_iterator( acc_pen ), (*this) );
 					acc[ 1 ] = token(); // be sure to invalidate recursion stop in acc[1]
-					if ( leading_space ) local( * leading_space );
+					if ( leading_space ) (*this)( * leading_space );
 				}
 				acc_pen = acc + concat; // discard and overwrite possible recursion stop
 				
@@ -327,7 +324,7 @@ private:
 					ends[ side ] = &* copies[ side ].end() - stripped_stops[ side ];
 				}
 				
-				if ( leading_space ) local( * leading_space ); // preserve leading space
+				if ( leading_space ) (*this)( * leading_space ); // preserve leading space
 				
 				acc_pen = acc; // perform the paste into the intermediate result register
 				if ( begins[lhs] == ends[lhs] ) {
@@ -335,14 +332,14 @@ private:
 						* acc_pen ++ = pp_constants::placemarker;
 						continue;
 					}
-					pass( begins[rhs], ends[rhs] - 1, local ); // LHS is empty; output the RHS
+					pass( begins[rhs], ends[rhs] - 1, (*this) ); // LHS is empty; output the RHS
 					* acc_pen ++ = std::move( ends[rhs][ -1 ] ); // just save the last token as intermediate result
 					if ( ! stringize && stripped_stops[rhs] ) {
 						* acc_pen ++ = pp_constants::recursion_stop; // preserve stopper
 					}
 					continue;
 				}
-				pass( begins[lhs], ends[lhs] - 1, local ); // flush the tokens preceding the result
+				pass( begins[lhs], ends[lhs] - 1, (*this) ); // flush the tokens preceding the result
 				
 				if ( begins[rhs] == ends[rhs] ) { // RHS is empty; already sent the LHS
 					* acc_pen ++ = std::move( ends[lhs][ -1 ] );
@@ -361,8 +358,8 @@ private:
 				while ( ++ begins[rhs] != ends[rhs] && * begins[rhs] == pp_constants::recursion_stop ) ; // re-evaluate recursion
 				
 				if ( begins[rhs] != ends[rhs] ) {
-					local( std::move( acc[ 0 ] ) ); // flush if not an intermediate result
-					pass( begins[rhs], ends[rhs] - 1, local );
+					(*this)( std::move( acc[ 0 ] ) ); // flush if not an intermediate result
+					pass( begins[rhs], ends[rhs] - 1, (*this) );
 					acc[ 0 ] = ends[rhs][ -1 ]; // get a new intermediate result from end of RHS
 					if ( stripped_stops[rhs] ) {
 						* acc_pen ++ = pp_constants::recursion_stop; // preserve stopper
@@ -370,12 +367,12 @@ private:
 				}
 			
 			} else if ( leading_token ) { //						================================ SUBSTITUTE ===
-				if ( leading_space ) local( * leading_space );
+				if ( leading_space ) (*this)( * leading_space );
 				-- acc_pen; // don't leave intermediate result
 				
 				auto param = std::find( def.begin(), def.begin() + args_info.size(), acc[ 0 ] );
 				if ( param == def.begin() + args_info.size() ) {
-					local( std::move( acc[ 0 ] ) ); // common case - copy from replacement list to output
+					(*this)( std::move( acc[ 0 ] ) ); // common case - copy from replacement list to output
 				} else {
 					auto caller_self = common.callers.back();
 					common.callers.pop_back(); // evaluate argument in caller's context, i.e. current name is not recursion-
@@ -386,7 +383,7 @@ private:
 						pile< macro_context >( common, std::function< void( token && ) >( [&]( token &&in ) {
 							common.callers.push_back( caller_self ); // restore current context for rescanning
 							CPLUS_FINALLY( common.callers.pop_back(); )
-							local( std::move( in ) );
+							(*this)( std::move( in ) );
 							CPLUS_DO_FINALLY
 						} ) )
 					 );
@@ -395,7 +392,7 @@ private:
 				}
 			}
 		}
-		pass( std::make_move_iterator( acc ), std::make_move_iterator( acc_pen ), local );
+		pass( std::make_move_iterator( acc ), std::make_move_iterator( acc_pen ), (*this) );
 		replace_object_completely();
 		CPLUS_DO_FINALLY
 	}
