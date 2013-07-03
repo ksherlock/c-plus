@@ -401,7 +401,7 @@ struct raw_file : input_source {
 	template< typename ftor >
 	void filter( ftor && fn ) const {
 		std::filebuf fb;
-		if ( ! fb.open( path, std::ios::in | std::ios::binary ) ) throw error( * this, "Unable to open file." ); // Copies this. Unsafe if cache were added.
+		if ( ! fb.open( path, std::ios::in | std::ios::binary ) ) throw error( * this, "Unable to open file." );
 		char buf[ 16384 ];
 		std::streamsize count;
 		do {
