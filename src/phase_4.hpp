@@ -149,7 +149,7 @@ class phase4
 		pass( std::make_move_iterator( first ), std::make_move_iterator( last ),
 			pile< macro_context >(
 				static_cast< macro_context_info & >( * this ),
-				std::function< void( token && ) >( std::ref( filter ) ) ) );
+				util::function< void( token && ), void( error && ) >( std::ref( filter ), this->template pass_function< error && >() ) ) );
 		
 		CPLUS_DO_FINALLY
 		return ret;
@@ -688,7 +688,10 @@ public:
 							tokens args;
 							instantiate( std::make_shared< raw_text >( destringize( in.s ), in ),
 								pile< phase3 >( get_config< phase3_config >(),
-									static_cast< std::function< void( token && ) > const & >( [ & args ]( token && t ){ args.push_back( std::move( t ) ); } ) ) );
+									util::function< void( token && ), void( error && ) >(
+										[ & args ]( token && t ){ args.push_back( std::move( t ) ); },
+										this->template pass_function< error && >()
+									) ) );
 							auto pen = args.begin();
 							if ( pp_constants::skip_space( pen, args.end() ) == args.end() ) return;
 							

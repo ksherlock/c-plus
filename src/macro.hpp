@@ -208,7 +208,7 @@ private:
 		// Use a local copy of phase 3 to generate tokens one at a time as intermediate results.
 		token acc[ 2 ], *acc_pen = acc; // [0] is LHS, [1] is RHS from stringize or LHS recursion stop
 		bool acc_full = false;
-		auto acc_pass = std::function< void( token && ) >( [&]( token && t ) {
+		auto acc_pass = util::function< void( token && ), void( error && ) >( [&]( token && t ) {
 			if ( t.type == token_type::ws ) return; // Discard trailing newline from tokenizer flush. Would be nice to trap other whitespace.
 			
 			CPLUS_FINALLY ( acc_full = true; )
@@ -217,7 +217,7 @@ private:
 			acc_pen[ -1 ] = std::move( t );
 			this->template diagnose< diagnose_policy::pass, error >( acc_full, t, "Token catenation (##) did not produce only one result token." );
 			CPLUS_DO_FINALLY
-		} );
+		}, this->template pass_function< error && >() );
 		
 		token const *leading_space = nullptr;
 		for ( auto pen = def.begin() + args_info.size() + 1 /* skip ")" or " " */; pen != def.end(); leading_space = &* pen - 1  ) {
@@ -290,7 +290,7 @@ private:
 				acc_full = false;
 				instantiate( std::make_shared< raw_text >( s,
 					instantiate_component( std::make_shared< macro_substitution >( std::move( * pen ), arg.begin, arg.end ), 0 )
-				), pile< phase3 >( common.token_config, acc_pass ) );
+				), pile< phase3 >( common.token_config, util::val( acc_pass ) ) );
 				pen += 2; // consume argument of #
 				
 				if ( this->template diagnose< diagnose_policy::pass, error >( ! acc_full || acc_pen[-1].type != token_type::string_lit,
@@ -351,7 +351,7 @@ private:
 				
 				acc_full = false;
 				instantiate( std::make_shared< raw_text >( ends[lhs][ -1 ].s + begins[rhs][ 0 ].s, ends[lhs][ -1 ] ), 
-					pile< phase3 >( common.token_config, acc_pass ) );
+					pile< phase3 >( common.token_config, util::val( acc_pass ) ) );
 				if ( this->template diagnose< diagnose_policy::pass, error >( ! acc_full, begins[rhs][ 0 ], "Token catenation (##) did not produce any result token." ) ) {
 					* acc_pen ++ = pp_constants::placemarker;
 				}
@@ -380,12 +380,12 @@ private:
 					
 					arg_info arg = args_info[ param - def.begin() ];
 					instantiate( std::make_shared< macro_substitution >( std::move( acc[ 0 ] ), arg.begin, arg.end ),
-						pile< macro_context >( common, std::function< void( token && ) >( [&]( token &&in ) {
+						pile< macro_context >( common, util::function< void( token && ), void( error && ) >( [&]( token &&in ) {
 							common.callers.push_back( caller_self ); // restore current context for rescanning
 							CPLUS_FINALLY( common.callers.pop_back(); )
 							(*this)( std::move( in ) );
 							CPLUS_DO_FINALLY
-						} ) )
+						}, this->template pass_function< error && >() ) )
 					 );
 					
 					CPLUS_DO_FINALLY

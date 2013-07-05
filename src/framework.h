@@ -70,6 +70,8 @@ template< typename ftor, typename unspecial > // An object with a parameter_exce
 struct parameter_exceptions< ftor, typename util::mention< typename ftor::parameter_exceptions >::type, unspecial >
 	{ typedef typename ftor::parameter_exceptions type; };
 
+struct passed_exception : std::runtime_error { passed_exception() : std::runtime_error( "ICE: Failed to stop exception propagation after normal handling." ) {} };
+
 // pass() puts input into a stage (functor or iterator) or its succeeding stages, catches thrown exceptions and feeds them back in.
 enum class pass_policy { mandatory, optional, enable_if };
 enum class diagnose_policy { none, pass, fatal }; // Apply to either sender or receiver. Sender cannot specify none.
@@ -94,13 +96,16 @@ pass( fn && obj, v && val )
 	{ pass< policy >( std::forward< fn >( obj ).cont, std::forward< v >( val ) ); }
 
 template< pass_policy policy = pass_policy::mandatory, typename w, typename v >
-typename util::mention< decltype( pass( std::declval< w & >(), std::declval< v >() ) ) >::type
+typename util::mention< decltype( pass< pass_policy::enable_if >( std::declval< w & >(), std::declval< v >() ) ) >::type
 pass( std::reference_wrapper< w > wrap, v && val )
 	{ pass< policy >( wrap.get(), std::forward< v >( val ) ); }
 
 template< typename fn, typename v >
-void pass( fn & obj, v && val, util::mention< std::tuple<> > )
-	{ obj( std::forward< v >( val ) ); }
+void pass( fn & obj, v && val, util::mention< std::tuple<> > ) {
+	try {
+		obj( std::forward< v >( val ) );
+	} catch ( passed_exception & ) {}
+}
 
 template< typename e, typename ... er, typename fn, typename v >
 void pass( fn & obj, v && val, util::mention< std::tuple< e, er ... > > ) {
@@ -142,15 +147,6 @@ pass( iit first, iit last, obj && o )
 	{ return pass_some< policy >( first, last, std::forward< obj >( o ) ); }
 #endif
 
-template< typename exception_type, typename obj, typename ... args >
-typename util::mention< decltype( pass< pass_policy::enable_if >( std::declval< obj >(), std::declval< exception_type >() ) ) >::type
-pass_or_throw( obj && o, args && ... a )
-	{ pass( std::forward< obj >( o ), exception_type{ std::forward< args >( a ) ... } ); }
-
-template< typename exception_type, typename ... args >
-void pass_or_throw( util::poor_conversion, args && ... a )
-	{ throw exception_type{ std::forward< args >( a ) ... }; }
-
 // Adaptor for deriving one stage from another and using base's output iterator.
 template< typename base_type, typename ... config_types >
 class derived_stage : public base_type {
@@ -185,6 +181,10 @@ protected:
 		std::tuple< acc_config ... > && cacc, args && ... a )
 		: base( std::forward< args >( a ) ... ), configs( std::move( cacc ) ) {}
 	
+	template< typename t >
+	std::function< void( t ) > pass_function()
+		{ return [this] ( t a ) { pass( std::forward< t >( a ) ); }; }
+	
 public:
 	template< typename client = typename std::tuple_element< 0, std::tuple< config_types const ..., void > >::type >
 	typename std::enable_if< util::tuple_index< client &, decltype( configs ) >::value != ( sizeof ... ( config_types ) ), client & >::type
@@ -201,21 +201,18 @@ public:
 	template< pass_policy policy = pass_policy::mandatory, typename iit >
 	void pass( iit first, iit last ) { cplus::pass< policy >( first, last, * this ); }
 
-	template< typename exception_type, typename ... args >
-	void pass_or_throw( args && ... a )
-		{ cplus::pass_or_throw< exception_type >( * this, std::forward< args >( a ) ... ); }
-	
 	template< diagnose_policy policy, typename exception_type, typename ... args >
-	typename std::enable_if< std::is_void< decltype( cplus::pass( std::declval< derived_stage & >(), std::declval< exception_type >() ) ) >::value
-								&& policy == diagnose_policy::pass, bool >::type
+	typename std::enable_if< std::is_void< decltype( cplus::pass( std::declval< derived_stage & >(), std::declval< exception_type >() ) ) >::value, bool >::type
 	diagnose( bool condition, args && ... a ) {
-		if ( condition ) pass< pass_policy::mandatory >( exception_type( std::forward< args >( a ) ... ) );
+		if ( condition ) {
+			pass< pass_policy::mandatory >( exception_type( std::forward< args >( a ) ... ) );
+			if ( policy == diagnose_policy::fatal ) throw passed_exception();
+		}
 		return condition;
 	}
 	
 	template< diagnose_policy policy, typename exception_type, typename ... args >
-	typename std::enable_if< ! std::is_void< decltype( cplus::pass( std::declval< derived_stage & >(), std::declval< exception_type >() ) ) >::value
-								|| policy == diagnose_policy::fatal, bool >::type
+	typename std::enable_if< ! std::is_void< decltype( cplus::pass( std::declval< derived_stage & >(), std::declval< exception_type >() ) ) >::value, bool >::type
 	diagnose( bool condition, args && ... a ) {
 		if ( condition ) throw exception_type( std::forward< args >( a ) ... );
 		return false;
@@ -253,7 +250,9 @@ using stage = derived_stage< stage_base< output_iterator >, config_types ... >;
 template< typename s >
 typename std::enable_if< ! std::is_same< typename s::base, typename s::stage_base >::value >::type
 finalize( s &o ) {
-	o.flush();
+	try {
+		o.flush();
+	} catch ( passed_exception & ) {}
 	finalize( static_cast< typename s::base & >( o ) );
 }
 
@@ -262,7 +261,9 @@ finalize( s &o ) {
 template< typename s >
 typename std::enable_if< std::is_same< typename s::base, typename s::stage_base >::value >::type
 finalize( s &o ) {
-	o.flush();
+	try {
+		o.flush();
+	} catch ( passed_exception & ) {}
 	finalize( o.cont );
 }
 
@@ -327,7 +328,7 @@ private:
 	static typename std::enable_if< ! std::is_same< construct const &, decltype( std::declval< instantiation_derived >().component(0) ) >::value >::type
 	instantiate( std::shared_ptr< instantiation_derived > const &inst, pile & p ) {
 		for ( std::size_t i = 0; i != inst->size(); ++ i ) {
-			p( instantiate_component( inst, i ) );
+			pass( p, instantiate_component( inst, i ) );
 		}
 	}
 
@@ -386,7 +387,7 @@ struct input_source : instantiation {
 		rc.construct::operator = ( source_link( std::move( inst ), 0 ) );
 		inst_p->filter( [&p, &rc]( uint8_t c ) {
 			rc.c = c;
-			p( rc );
+			pass( p, rc );
 			advance( rc );
 		} );
 	}

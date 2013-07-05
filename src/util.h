@@ -127,12 +127,15 @@ struct common_type< base, cplus::util::add_ftor< ftor > > {
 template< typename ... t >
 struct amalgam_ftor
 	: std::common_type< amalgam< t ... >, add_ftor< t > ... >::type {
-	using std::common_type< amalgam< t ... >, add_ftor< t > ... >::type::type;
+	using std::common_type< amalgam< t ... >, add_ftor< t > ... >::type::type; // Inheriting constructor, not a metafunction.
 };
 
 template< typename ... t >
 amalgam_ftor< t ... > amalgamate( t && ... in )
 	{ return { std::forward< t >( in ) ... }; }
+
+template< typename ... sig >
+using function = amalgam_ftor< std::function< sig > ... >;
 
 template< typename bound >
 struct implicit_thunk {
