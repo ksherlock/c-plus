@@ -39,38 +39,9 @@ string repool( string s, string_pool p ) { return { s.c_str(), p }; }
 
 namespace cplus {
 
-template< typename, typename = void, typename = void * > // by default, a stage does not handle exceptions
-struct parameter_exceptions
-	{ typedef std::tuple<> type; };
-
-// Specializations for composite types are more specialized, to be selected first and delegate to specializations for constituent types.
-template< typename ama > // First handle amalgamations, which are derived from util::amalgam.
-struct parameter_exceptions< ama, typename std::enable_if< ! std::is_same< ama, typename ama::amalgam >::value >::type >
-	{ typedef typename parameter_exceptions< typename ama::amalgam >::type type; };
-
-template< typename ... base > // A stage which is an amalgamation acts as the union of its bases.
-struct parameter_exceptions< util::amalgam< base ... > >
-	{ typedef typename util::tuple_cat< typename parameter_exceptions< base >::type ... >::type type; };
-
-template< typename ftor, typename unspecial > // An intermediate stage may handle some exceptions by itself, and delegate others to later stages.
-struct parameter_exceptions< ftor, typename util::mention< decltype( & ftor::cont ) >::type, unspecial * > {
-	typedef typename util::tuple_cat<
-		typename parameter_exceptions< ftor, void, void >::type, // avoid recursion and call more general specialization
-		typename parameter_exceptions< decltype( std::declval< ftor >().cont ) >::type >::type type;
-};
-
-template< typename ftor, typename unspecial > // A functor with one nonstatic operator() overload taking a derivative of std::exception handles that type.
-struct parameter_exceptions< ftor,
-	typename std::enable_if< std::is_base_of< std::exception,
-		typename std::decay< typename std::reference_wrapper< decltype( & ftor::operator() ) >::second_argument_type >::type
-	>::value >::type, unspecial >
-	{ typedef std::tuple< typename std::reference_wrapper< decltype( & ftor::operator() ) >::second_argument_type > type; };
-
-template< typename ftor, typename unspecial > // An object with a parameter_exceptions member uses it as an explicit spec. It cannot satisfy the previous specialization.
-struct parameter_exceptions< ftor, typename util::mention< typename ftor::parameter_exceptions >::type, unspecial >
-	{ typedef typename ftor::parameter_exceptions type; };
-
 struct passed_exception : std::runtime_error { passed_exception() : std::runtime_error( "ICE: Failed to stop exception propagation after normal handling." ) {} };
+
+void finalize( util::poor_conversion const & ) {} // fallback overload, worse than derived-to-base conversion
 
 // pass() puts input into a stage (functor or iterator) or its succeeding stages, catches thrown exceptions and feeds them back in.
 enum class pass_policy { mandatory, optional, enable_if };
@@ -83,7 +54,12 @@ auto pass( oit it, v && val )
 
 template< pass_policy = {}, typename fn, typename v >
 typename util::mention< typename std::result_of< fn &( v ) >::type >::type
-pass( fn && obj, v && val );
+pass( fn && obj, v && val ) {
+	try {
+		obj( std::forward< v >( val ) );
+	} catch ( passed_exception & ) {}
+	if ( ! std::is_reference< fn >::value ) finalize( obj );
+}
 
 template< pass_policy policy = pass_policy::mandatory >
 typename std::enable_if< policy != pass_policy::enable_if, pass_policy >::type // to see overload resolution errors, specify enable_if.
@@ -99,31 +75,6 @@ template< pass_policy policy = pass_policy::mandatory, typename w, typename v >
 typename util::mention< decltype( pass< pass_policy::enable_if >( std::declval< w & >(), std::declval< v >() ) ) >::type
 pass( std::reference_wrapper< w > wrap, v && val )
 	{ pass< policy >( wrap.get(), std::forward< v >( val ) ); }
-
-template< typename fn, typename v >
-void pass( fn & obj, v && val, util::mention< std::tuple<> > ) {
-	try {
-		obj( std::forward< v >( val ) );
-	} catch ( passed_exception & ) {}
-}
-
-template< typename e, typename ... er, typename fn, typename v >
-void pass( fn & obj, v && val, util::mention< std::tuple< e, er ... > > ) {
-	try {
-		pass( obj, std::forward< v >( val ), util::mention< std::tuple< er ... > >() );
-	} catch ( e & exc ) {
-		pass( obj, std::forward< e >( exc ) ); // May move e. Double exceptions may cause infinite recursion.
-	}
-}
-
-void finalize( util::poor_conversion const & ) {} // fallback overload, worse than derived-to-base conversion
-
-template< pass_policy, typename fn, typename v >
-typename util::mention< typename std::result_of< fn &( v ) >::type >::type
-pass( fn && obj, v && val ) {
-	pass( obj, std::forward< v >( val ), util::mention< typename parameter_exceptions< typename std::decay< fn >::type >::type >() );
-	if ( ! std::is_reference< fn >::value ) finalize( obj );
-}
 
 template< pass_policy policy = pass_policy::mandatory, typename obj, typename iit >
 auto
