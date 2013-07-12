@@ -109,7 +109,6 @@ public:
 
 	void flush() {}
 	
-protected:
 	template< typename ... args >
 	derived_stage( args && ... a ) : derived_stage( tag(), std::tuple<>(), std::forward< args >( a ) ... ) {}
 	
@@ -132,11 +131,10 @@ protected:
 		std::tuple< acc_config ... > && cacc, args && ... a )
 		: base( std::forward< args >( a ) ... ), configs( std::move( cacc ) ) {}
 	
-	template< typename t >
-	std::function< void( t ) > pass_function()
-		{ return [this] ( t a ) { pass( std::forward< t >( a ) ); }; }
+	template< typename ... t >
+	util::function< void( t ) ... > pass_function()
+		{ return { std::bind( static_cast< void (derived_stage::*) ( t ) >( & derived_stage::pass ), this, std::placeholders::_1 ) ... }; }
 	
-public:
 	template< typename client = typename std::tuple_element< 0, std::tuple< config_types const ..., void > >::type >
 	typename std::enable_if< util::tuple_index< client &, decltype( configs ) >::value != ( sizeof ... ( config_types ) ), client & >::type
 	get_config() { return std::get< util::tuple_index< client &, decltype( configs ) >::value >( configs ); }
@@ -413,7 +411,7 @@ struct stack_stages< cont, stage, rem ... >
 	{ typedef stage< typename stack_stages< cont, rem ... >::type > type; };
 
 template< template< typename ... > class ... stages, typename ... args >
-typename stack_stages< typename std::tuple_element< sizeof ... ( args ) - 1, std::tuple< args ... > >::type, stages ... >::type
+derived_stage< typename stack_stages< typename std::tuple_element< sizeof ... ( args ) - 1, std::tuple< args ... > >::type, stages ... >::type >
 pile( args && ... a )
 	{ return { std::forward< args >( a ) ... }; }
 

@@ -206,7 +206,7 @@ private:
 		}
 		
 		// Use a local copy of phase 3 to generate tokens one at a time as intermediate results.
-		struct : stage< std::reference_wrapper< macro_context > > {
+		struct lex_acc_stage : stage< std::reference_wrapper< macro_context > > {
 			using stage< std::reference_wrapper< macro_context > >::stage;
 			
 			bool lex_error = false;
@@ -223,19 +223,20 @@ private:
 				if ( output.empty() ) output.push_back( std::move( t ) );
 				else {
 					lex_error = true;
-					this->pass( flush() ); // Passing ahead of the overflow diagnostic preserves consistency between throwing and not.
+					this->pass( flush_output() ); // Passing ahead of the overflow diagnostic preserves consistency between throwing and not.
 					output.push_back( std::move( t ) );
 					this->template diagnose< diagnose_policy::pass, error >( true, output.back(), "Operation produced more than one result token." );
 				}
 			}
 			
-			token flush() {
+			token flush_output() {
 				token ret = output.empty()? pp_constants::placemarker : std::move( output.front() );
 				lex_error |= this->template diagnose< diagnose_policy::pass, error >( output.empty(), construct(), "Operation did not produce any result token." );
 				output.clear();
 				return ret;
 			}
-		} lex_acc( * this );
+		};
+		auto lex_acc = pile( lex_acc_stage( * this ) );
 		
 		token acc[ 2 ], *acc_pen = acc; // [0] is LHS, [1] is RHS from stringize or LHS recursion stop
 		token const *leading_space = nullptr;
@@ -308,11 +309,12 @@ private:
 				
 				instantiate( std::make_shared< raw_text >( s,
 					instantiate_component( std::make_shared< macro_substitution >( std::move( * pen ), arg.begin, arg.end ), 0 )
-				), pile< phase3 >( common.token_config, util::function< void(token &&), void(error &&) >( std::ref( lex_acc ), std::ref( lex_acc ) ) ) );
+				), pile< phase3 >( common.token_config, lex_acc.template pass_function< token &&, error && >() ) );
 				pen += 2; // consume argument of #
 				
-				* acc_pen ++ = lex_acc.flush();
-				if ( ! lex_acc.lex_error && acc_pen[ -1 ].type != token_type::string_lit ) lex_acc.pass( error( arg.begin[ 0 ], "Stringize (#) result is not a string (§16.3.2/2)." ) );
+				* acc_pen ++ = lex_acc.flush_output();
+				lex_acc.template diagnose< diagnose_policy::pass, error >( ! lex_acc.lex_error && acc_pen[ -1 ].type != token_type::string_lit,
+					arg.begin[ 0 ], "Stringize (#) result is not a string (§16.3.2/2)." ); // Impossible.
 				
 				this->template diagnose< diagnose_policy::pass, error >( lex_acc.lex_error, arg.begin[ 0 ], "Stringize (#) failed." );
 				lex_acc.lex_error = false;
@@ -369,8 +371,8 @@ private:
 				}
 				
 				instantiate( std::make_shared< raw_text >( ends[lhs][ -1 ].s + begins[rhs][ 0 ].s, ends[lhs][ -1 ] ), 
-					pile< phase3 >( common.token_config, util::function< void(token &&), void(error &&) >( std::ref( lex_acc ), std::ref( lex_acc ) ) ) );
-				* acc_pen ++ = lex_acc.flush();
+					pile< phase3 >( common.token_config, lex_acc.template pass_function< token &&, error && >() ) );
+				* acc_pen ++ = lex_acc.flush_output();
 				
 				this->template diagnose< diagnose_policy::pass, error >( lex_acc.lex_error, begins[rhs][ 0 ], "Concatenate (##) failed." );
 				lex_acc.lex_error = false;
