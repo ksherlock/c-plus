@@ -297,7 +297,7 @@ private:
 							}
 							if ( this->template diagnose< diagnose_policy::pass, error >( c == '\n', * pen,
 								"Raw string contains a newline, which is invalid in the non-raw result of the # operator." ) ) {
-								s += "\\\\n";
+								s += "\\n";
 								continue;
 							}
 						}
