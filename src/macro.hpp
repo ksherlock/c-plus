@@ -206,19 +206,38 @@ private:
 		}
 		
 		// Use a local copy of phase 3 to generate tokens one at a time as intermediate results.
-		token acc[ 2 ], *acc_pen = acc; // [0] is LHS, [1] is RHS from stringize or LHS recursion stop
-		bool acc_full = false;
-		auto acc_pass = util::function< void( token && ), void( error && ) >( [&]( token && t ) {
-			if ( t.type == token_type::ws ) return; // Discard trailing newline from tokenizer flush. Would be nice to trap other whitespace.
+		struct : stage< std::reference_wrapper< macro_context > > {
+			using stage< std::reference_wrapper< macro_context > >::stage;
 			
-			CPLUS_FINALLY ( acc_full = true; )
-			if ( ! acc_full ) ++ acc_pen;
-			else this->pass( std::move( acc_pen[ -1 ] ) ); // Passing ahead of the overflow diagnostic preserves consistency between throwing and not.
-			acc_pen[ -1 ] = std::move( t );
-			this->template diagnose< diagnose_policy::pass, error >( acc_full, t, "Token catenation (##) did not produce only one result token." );
-			CPLUS_DO_FINALLY
-		}, this->template pass_function< error && >() );
+			bool lex_error = false;
+			std::vector< token > output;
+			
+			void operator () ( error && e ) {
+				lex_error = true;
+				this->template diagnose< diagnose_policy::pass, error && >( true, std::move( e ) );
+			}
+			
+			void operator () ( token && t ) {
+				if ( t.type == token_type::ws ) return; // Discard trailing newline from tokenizer flush. Would be nice to trap other whitespace.
+				
+				if ( output.empty() ) output.push_back( std::move( t ) );
+				else {
+					lex_error = true;
+					this->pass( flush() ); // Passing ahead of the overflow diagnostic preserves consistency between throwing and not.
+					output.push_back( std::move( t ) );
+					this->template diagnose< diagnose_policy::pass, error >( true, output.back(), "Operation produced more than one result token." );
+				}
+			}
+			
+			token flush() {
+				token ret = output.empty()? pp_constants::placemarker : std::move( output.front() );
+				lex_error |= this->template diagnose< diagnose_policy::pass, error >( output.empty(), construct(), "Operation did not produce any result token." );
+				output.clear();
+				return ret;
+			}
+		} lex_acc( * this );
 		
+		token acc[ 2 ], *acc_pen = acc; // [0] is LHS, [1] is RHS from stringize or LHS recursion stop
 		token const *leading_space = nullptr;
 		for ( auto pen = def.begin() + args_info.size() + 1 /* skip ")" or " " */; pen != def.end(); leading_space = &* pen - 1  ) {
 			/* Each iteration handles some subset of the sequence <token> ## # <token>:
@@ -287,16 +306,16 @@ private:
 				}
 				s += '\"';
 				
-				acc_full = false;
 				instantiate( std::make_shared< raw_text >( s,
 					instantiate_component( std::make_shared< macro_substitution >( std::move( * pen ), arg.begin, arg.end ), 0 )
-				), pile< phase3 >( common.token_config, util::val( acc_pass ) ) );
+				), pile< phase3 >( common.token_config, util::function< void(token &&), void(error &&) >( std::ref( lex_acc ), std::ref( lex_acc ) ) ) );
 				pen += 2; // consume argument of #
 				
-				if ( this->template diagnose< diagnose_policy::pass, error >( ! acc_full || acc_pen[-1].type != token_type::string_lit,
-					arg.begin[ 0 ], "Stringize (#) did not produce a valid result string (§16.3.2/2)." ) ) { // How to test this? http://stackoverflow.com/q/17416256/153285
-					if ( ! acc_full ) * acc_pen ++ = pp_constants::placemarker;
-				}
+				* acc_pen ++ = lex_acc.flush();
+				if ( ! lex_acc.lex_error && acc_pen[ -1 ].type != token_type::string_lit ) lex_acc.pass( error( arg.begin[ 0 ], "Stringize (#) result is not a string (§16.3.2/2)." ) );
+				
+				this->template diagnose< diagnose_policy::pass, error >( lex_acc.lex_error, arg.begin[ 0 ], "Stringize (#) failed." );
+				lex_acc.lex_error = false;
 			}
 			
 			if ( concat ) { //													=================== CONCATENATE ===
@@ -349,12 +368,13 @@ private:
 					continue;
 				}
 				
-				acc_full = false;
 				instantiate( std::make_shared< raw_text >( ends[lhs][ -1 ].s + begins[rhs][ 0 ].s, ends[lhs][ -1 ] ), 
-					pile< phase3 >( common.token_config, util::val( acc_pass ) ) );
-				if ( this->template diagnose< diagnose_policy::pass, error >( ! acc_full, begins[rhs][ 0 ], "Token catenation (##) did not produce any result token." ) ) {
-					* acc_pen ++ = pp_constants::placemarker;
-				}
+					pile< phase3 >( common.token_config, util::function< void(token &&), void(error &&) >( std::ref( lex_acc ), std::ref( lex_acc ) ) ) );
+				* acc_pen ++ = lex_acc.flush();
+				
+				this->template diagnose< diagnose_policy::pass, error >( lex_acc.lex_error, begins[rhs][ 0 ], "Concatenate (##) failed." );
+				lex_acc.lex_error = false;
+				
 				while ( ++ begins[rhs] != ends[rhs] && * begins[rhs] == pp_constants::recursion_stop ) ; // re-evaluate recursion
 				
 				if ( begins[rhs] != ends[rhs] ) {
