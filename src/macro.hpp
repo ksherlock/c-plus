@@ -240,7 +240,7 @@ private:
 		
 		token acc[ 2 ], *acc_pen = acc; // [0] is LHS, [1] is RHS from stringize or LHS recursion stop
 		token const *leading_space = nullptr;
-		for ( auto pen = def.begin() + args_info.size() + 1 /* skip ")" or " " */; pen != def.end(); leading_space = &* pen - 1  ) {
+		for ( auto pen = def.begin() + args_info.size() + function_like + 1 /* skip args, ")", and leading space */; pen != def.end(); leading_space = &* pen - 1  ) {
 			/* Each iteration handles some subset of the sequence <token> ## # <token>:
 							leading_token			! leading_token
 				neither		<lhs>					-
@@ -420,93 +420,6 @@ private:
 	}
 };
 
-macro_context_info::name_map::value_type normalize_macro_definition( tokens input, string_pool &macro_pool ) {
-	using namespace pp_constants;
-	
-	tokens::iterator pen = input.begin(); // skip leading space in input buffer and directive "define"
-	skip_space( pen, input.end() );
-	
-	if ( skip_space( ++ pen, input.end() ) == input.end() || pen->type != token_type::id || * pen == variadic ) {
-		if ( pen == input.end() ) -- pen;
-		throw error( * pen, "Expected macro definition." );
-	}
-	string name = repool( pen ++ ->s, macro_pool );
-	
-	tokens replacement;
-	size_t nargs = 0;
-	if ( pen != input.end() && pen->type != token_type::ws ) {
-		if ( * pen != lparen )
-			throw error( * pen, "An object-like macro definition must begin with whitespace (§16.3/3)." );
-		while ( * pen != rparen ) {
-			if ( skip_space( ++ pen, input.end() ) == input.end() ) parameters_unterminated:
-				throw error( pen[ -1 ], "Unterminated parameter list." );
-			if ( replacement.empty() && * pen == rparen ) break; // empty list
-			
-			if ( * pen == variadic )
-				throw error( * pen, "The identifier __VA_ARGS__ is reserved (§16.3/5)." );
-			if ( * pen == variadic_decl ) { // convert punctuator "..." to identifier "__VA_ARGS__"
-				replacement.push_back( pen->assign_content( variadic ) );
-			} else {
-				if ( pen->type != token_type::id )
-					throw error( * pen, "Parameter name must be an identifier." );
-				if ( std::find( replacement.begin(), replacement.end(), * pen ) != replacement.end() )
-					throw error( * pen, "Parameter name must be unique (§16.3/6)." );
-				//replacement.push_back( std::move( * pen ) );
-				replacement.push_back( pen->reallocate( macro_pool ) );
-			}
-			if ( skip_space( ++ pen, input.end() ) == input.end() ) goto parameters_unterminated;
-			if ( * pen != rparen && replacement.back() == variadic )
-				throw error( replacement.back(),
-					"Variadic arguments must be declared as \"...\" at the end of the parameter "
-					"list, and then referred to as \"__VA_ARGS__\" (§16.3/12, §16.3.1/2)." );
-			if ( * pen != rparen && * pen != comma )
-				throw error( * pen, "Expected \",\" to separate parameter declarations." );
-		}
-		replacement.push_back( std::move( pen ++ ->reallocate( macro_pool ) ) ); // save ")"
-		nargs = replacement.size(); // includes ")" so nonzero if function-like
-		
-	} else {
-		replacement.push_back( space ); // synthesize a space if list is truly empty
-		replacement.back().construct::operator = ( pen == input.end()? pen[ -1 ] : * pen );
-	}
-	
-	if ( skip_space( pen, input.end() ) != input.end() && is_concat( * pen ) ) bad_cat:
-		throw error( * pen, "Concatenation (##) operator may not appear at beginning or end of a macro (§16.3.3/1)." );
-	
-	skip_space( pen, input.end() ); // Discard whitespace before replacement list, unconditionally.
-	
-	bool got_stringize = false;
-	while ( pen != input.end() ) {
-		if ( got_stringize && nargs // validate stringize operator
-			&& std::find( replacement.begin(), replacement.begin() + nargs - 1, * pen )
-				== replacement.begin() + nargs - 1 ) throw error( * pen,
-				"Stringize (#) operator in a function-like macro may only apply to an argument (§16.3.2/1)." );
-		got_stringize = is_stringize( * pen );
-		
-		if ( * pen == variadic // validate variadic usage
-			&& ( nargs < 2 || replacement[ nargs - 2 ] != variadic ) )
-			throw error( * pen, "The identifier __VA_ARGS__ is reserved (§16.3/5)." );
-		
-		replacement.push_back( pen ++ ->reallocate( macro_pool ) );
-		
-		if ( pen == input.end() || pen->type != token_type::ws ) {
-			replacement.push_back( placemarker );
-			replacement.back().construct::operator = ( replacement.end()[ -2 ] );
-			continue;
-		}
-		replacement.push_back( pen ++ ->reallocate( macro_pool ) );
-		while ( pen != input.end() && pen->type == token_type::ws ) {
-			replacement.back().s += pen ++ ->s; // condense whitespace
-		}
-		if ( pen == input.end() ) replacement.back().assign_content( placemarker ); // discard whitespace after replacement list
-	}
-	
-	if ( is_concat( replacement.back() ) )
-		goto bad_cat;
-	
-	return { name, replacement };
-}
-
 template< typename output_iterator >
 class macro_filter : public stage< output_iterator > {
 	friend typename macro_filter::stage;
@@ -526,9 +439,120 @@ class substitution_phase
 	protected macro_context_info {
 public:
 	template< typename ... args >
-	substitution_phase( macro_context_info::name_map &&init_macros, args && ... a )
+	substitution_phase( std::vector< tokens > init_macro_definitions, args && ... a )
 		: substitution_phase::derived_stage( static_cast< macro_context_info & >( * this ), std::forward< args >( a ) ... ),
-		macro_context_info{ this->get_config(), std::move( init_macros ), { pp_constants::empty_string } } {}
+		macro_context_info{ this->get_config(), name_map{}, { pp_constants::empty_string } } {
+		
+		init_macro_definitions.insert( init_macro_definitions.end(), {
+			{ pp_constants::define_directive, pp_constants::file_macro },
+			{ pp_constants::define_directive, pp_constants::line_macro }
+		} );
+		for ( auto && def : init_macro_definitions ) {
+			insert_macro_definition( std::move( def ), literal_pool ); // Predefined macros are like literals and should go into static storage.
+		}
+	}
+	
+	name_map::iterator insert_macro_definition( tokens input, string_pool &macro_pool ) {
+		using namespace pp_constants;
+		
+		tokens::iterator pen = input.begin(); // skip leading space in input buffer and directive "define"
+		skip_space( pen, input.end() );
+		
+		this->template diagnose< diagnose_policy::fatal, error >( skip_space( ++ pen, input.end() ) == input.end() || pen->type != token_type::id || * pen == variadic,
+			util::make_implicit_thunk( [&]{ return pen == input.end()? input.back() : * pen; } ), "Expected macro definition." );
+		string name = repool( pen ++ ->s, macro_pool );
+		
+		tokens replacement;
+		size_t nargs = 0;
+		if ( pen != input.end() && * pen == lparen ) {
+			while ( * pen != rparen ) {
+				this->template diagnose< diagnose_policy::fatal, error >( skip_space( ++ pen, input.end() ) == input.end(),
+					input.back(), "Unterminated parameter list." ); // Should retry as an object-like macro.
+				if ( replacement.empty() && * pen == rparen ) break; // empty list
+				
+				if ( * pen == variadic_decl || this->template diagnose< diagnose_policy::pass, error >( * pen == variadic,
+					* pen, "The identifier __VA_ARGS__ is reserved (§16.3/5). (This will be treated as a \"...\" token.)" ) ) {
+					replacement.push_back( pen->assign_content( variadic ) ); // Convert punctuator "..." to identifier "__VA_ARGS__".
+				
+				} else if ( this->template diagnose< diagnose_policy::pass, error >( pen->type != token_type::id,
+					* pen, "Parameter name must be an identifier." ) ) {
+					if ( * pen == comma ) -- pen;
+					replacement.push_back( placemarker ); // I divine that the user wanted an anonymous, unused parameter.
+				} else {
+					this->template diagnose< diagnose_policy::pass, error >( std::find( replacement.begin(), replacement.end(), * pen ) != replacement.end(),
+						* pen, "Parameter name must be unique (§16.3/6)." ); // Provide an inaccessible duplicate parameter to avoid throwing off indexes.
+					replacement.push_back( pen->reallocate( macro_pool ) ); // Handle regular parameter declarations.
+				}
+				this->template diagnose< diagnose_policy::fatal, error >( skip_space( ++ pen, input.end() ) == input.end(),
+					input.back(), "Unterminated parameter list." );
+				if ( this->template diagnose< diagnose_policy::pass, error >( * pen != rparen && replacement.back() == variadic,
+					replacement.back(), "Variadic arguments must be declared as \"...\" at the end of the parameter "
+						"list, and then referred to as \"__VA_ARGS__\" (§16.3/12, §16.3.1/2)." ) )
+					replacement.pop_back(); // Discard the inaccessible dummy.
+				if ( this->template diagnose< diagnose_policy::pass, error >( * pen != rparen && * pen != comma,
+					* pen, "Expected \",\" to separate parameter declarations." ) )
+					-- pen; // Retry whatever wasn't a comma as a declaration.
+			}
+			replacement.push_back( std::move( pen ++ ->reallocate( macro_pool ) ) ); // Save ")".
+			nargs = replacement.size(); // Includes ")" so nonzero if function-like.
+			
+		} else {
+			while ( token_semantic_equal( * pen, placemarker ) ) ++ pen;
+			this->template diagnose< diagnose_policy::pass, error >( pen != input.end() && ! token_semantic_equal( * pen, space ),
+				* pen, "An object-like macro definition must begin with whitespace (§16.3/3)." );
+		}
+		replacement.push_back( placemarker );
+		replacement.back().construct::operator = ( pen == input.end()? input.back() : * pen );
+		
+		skip_space( pen, input.end() ); // Discard whitespace before replacement list, unconditionally.
+		
+		if ( this->template diagnose< diagnose_policy::pass, error >( pen != input.end() && is_concat( * pen ),
+			* pen, "Concatenation (##) operator may not appear at the beginning of a macro (§16.3.3/1)." ) )
+			skip_space( ++ pen, input.end() ); // Ignore invalid operator.
+		
+		bool got_stringize = false;
+		while ( pen != input.end() ) {
+			this->template diagnose< diagnose_policy::pass, error >( got_stringize // Validate stringize operator.
+				&& std::find( replacement.begin(), replacement.begin() + nargs - 1, * pen ) == replacement.begin() + nargs - 1,
+				* pen, "Stringize (#) operator in a function-like macro may only apply to a parameter (§16.3.2/1)." );
+			got_stringize = is_stringize( * pen ) && nargs; // Stringize is only an operator in a function-like macro.
+			
+			this->template diagnose< diagnose_policy::pass, error >( * pen == variadic // Validate variadic usage.
+				&& ( nargs < 2 || replacement[ nargs - 2 ] != variadic ),
+				* pen, "__VA_ARGS__ may only be used in a variadic macro (§16.3/5)." ); // OK to leave it in. It will not be noticed.
+			
+			replacement.push_back( pen ++ ->reallocate( macro_pool ) );
+			
+			if ( pen == input.end() || pen->type != token_type::ws ) {
+				replacement.push_back( placemarker );
+				replacement.back().construct::operator = ( replacement.end()[ -2 ] );
+				continue;
+			}
+			replacement.push_back( pen ++ ->reallocate( macro_pool ) );
+			while ( pen != input.end() && pen->type == token_type::ws ) {
+				replacement.back().s += pen ++ ->s; // condense whitespace
+			}
+			if ( pen == input.end() ) replacement.back().assign_content( placemarker ); // Discard whitespace after replacement list.
+		}
+		
+		while ( replacement.size() >= 2 && // Since anything goes, protect engine from a replacement list consisting entirely of # and ## tokens.
+			( this->template diagnose< diagnose_policy::pass, error >( is_stringize( replacement.end()[ -2 ] ) && nargs,
+				replacement.end()[ -2 ], "Stringize (#) operator must be followed by a parameter (§16.3.2/1)." )
+			|| this->template diagnose< diagnose_policy::pass, error >( is_concat( replacement.end()[ -2 ] ),
+				replacement.end()[ -2 ], "Concatenation (##) operator may not appear at the end of a macro (§16.3.3/1)." ) ) )
+			replacement.erase( replacement.end() - 3, replacement.end() - 1 ); // Keep the final placemarker.
+		
+		auto ret = macros.insert( { name, replacement } );
+		
+		this->template diagnose< diagnose_policy::pass, error >( ! ret.second
+			&& ( replacement.size() != ret.first->second.size() || ! std::equal( replacement.begin(), replacement.end(), ret.first->second.begin() ) ),
+			util::make_implicit_thunk( [&] {
+				return * std::mismatch( replacement.begin(), replacement.begin() + std::min( replacement.size() - 1, ret.first->second.size() ),
+					ret.first->second.begin(), token_semantic_equal ).first;
+			} ), "Macro definition does not match previous definition."
+		);
+		return ret.first;
+	}
 };
 
 }

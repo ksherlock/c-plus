@@ -133,16 +133,15 @@ class phase4
 		tokens ret;
 		
 		// Make "defined" a macro which prevents expansion of its single argument. Imitate GCC's extension, manual §4.2.3.
+		typename phase4::macro_context_info::name_map::iterator preserver_it;
+		preserve_defined_operator = preserve_defined_operator && ! macros.count( pp_constants::defined_operator.s ); // If user-defined macro already exists, use that instead, and don't undefine it.
 		if ( preserve_defined_operator ) { // #define defined(x)defined(x##<recursion stop><recursion stop>)
 			using namespace pp_constants; // Catenating first recursion stop ensures that no space precedes second.
-			static auto const defined_preserver = normalize_macro_definition( { define_directive, defined_operator, lparen, { token_type::id, "x" }, rparen,
-				defined_operator, lparen, { token_type::id, "x" }, concat, recursion_stop, recursion_stop, rparen }, literal_pool );
-			
-			// If user-defined macro already exists, use that instead, and don't undefine it.
-			preserve_defined_operator = macros.insert( defined_preserver ).second;
+			preserver_it = this->insert_macro_definition( tokens{ define_directive, defined_operator, lparen, { token_type::id, "x" },
+				rparen, defined_operator, lparen, { token_type::id, "x" }, concat, recursion_stop, recursion_stop, rparen }, this->get_config().macro_pool );
 		}
 		CPLUS_FINALLY (
-			if ( preserve_defined_operator ) macros.erase( pp_constants::defined_operator.s ); // #undef defined
+			if ( preserve_defined_operator ) macros.erase( preserver_it ); // #undef defined
 		)
 		
 		auto filter = pile< macro_filter >( std::back_inserter( ret ) );
@@ -184,16 +183,7 @@ class phase4
 			// null directive
 			
 		} else if ( * pen == pp_constants::define_directive ) {
-			auto macro = normalize_macro_definition( std::move( input ), this->get_config().macro_pool );
-			auto definition = macros.insert( macro );
-			tokens::const_iterator diff;
-			this->template diagnose< diagnose_policy::fatal, error >( definition.second == false
-				&& ( macro.second.size() != definition.first->second.size()
-				|| ! std::equal( macro.second.begin(), macro.second.end(), definition.first->second.begin() ) ),
-				util::make_implicit_thunk( [&]{
-					return * std::mismatch( macro.second.begin(), macro.second.begin() + std::min( macro.second.size() - 1, definition.first->second.size() ),
-						definition.first->second.begin(), token_semantic_equal ).first;
-				} ), "Macro definition does not match previous definition." );
+			this->insert_macro_definition( std::move( input ), this->get_config().macro_pool );
 			
 		} else if ( * pen == pp_constants::undef_directive ) {
 			do this->template diagnose< diagnose_policy::fatal, error >( skip_space( ++ pen, input.end() ) == input.end(),
@@ -499,13 +489,14 @@ class phase4
 	
 public:
 	template< typename ... args >
-	phase4( args && ... a )
-		: derived_stage( macro_context_info::name_map {
-			normalize_macro_definition( { pp_constants::define_directive, pp_constants::stringize_macro, // #define #(...)#__VA_ARGS__
-				pp_constants::lparen, pp_constants::variadic_decl, pp_constants::rparen, pp_constants::stringize, pp_constants::variadic }, literal_pool ),
-			normalize_macro_definition( { pp_constants::define_directive, pp_constants::file_macro }, literal_pool ),
-			normalize_macro_definition( { pp_constants::define_directive, pp_constants::line_macro }, literal_pool ) },
-			std::forward< args >( a ) ... ),
+	phase4( args && ... a ) : phase4( {}, std::forward< args >( a ) ... ) {}
+	
+	template< typename ... args >
+	phase4( std::vector< tokens > init_macro_definitions /* Token sequences of directives with leading #'s stripped. */, args && ... a )
+		: derived_stage( ( init_macro_definitions.push_back( {
+			pp_constants::define_directive, pp_constants::stringize_macro, // #define #(...)#__VA_ARGS__
+				pp_constants::lparen, pp_constants::variadic_decl, pp_constants::rparen, pp_constants::stringize, pp_constants::variadic
+		} ), init_macro_definitions ), std::forward< args >( a ) ... ),
 		state( normal ), skip_depth( 0 ), conditional_depth( 0 ), guard_detect{ false } {
 		
 		char time_str_buf[ 26 ], *time_cstr = time_str_buf;
@@ -513,12 +504,12 @@ public:
 		util::ctime( &time_scalar, time_cstr );
 		std::string time_str( time_cstr );
 		
-		macros.insert( normalize_macro_definition( { pp_constants::define_directive, { token_type::id, "__TIME__" }, pp_constants::space,
-			{ token_type::string_lit, ( std::string( "\"" ) + time_str.substr( 11, 8 ) + "\"" ).c_str() } }, literal_pool ) );
+		this->insert_macro_definition( { pp_constants::define_directive, { token_type::id, "__TIME__" }, pp_constants::space,
+			{ token_type::string_lit, ( std::string( "\"" ) + time_str.substr( 11, 8 ) + "\"" ).c_str() } }, literal_pool );
 		
 		time_str.erase( 11, 9 );
-		macros.insert( normalize_macro_definition( { pp_constants::define_directive, { token_type::id, "__DATE__" }, pp_constants::space,
-			{ token_type::string_lit, ( std::string( "\"" ) + time_str.substr( 4, 11 ) + "\"" ).c_str() } }, literal_pool ) );
+		this->insert_macro_definition( { pp_constants::define_directive, { token_type::id, "__DATE__" }, pp_constants::space,
+			{ token_type::string_lit, ( std::string( "\"" ) + time_str.substr( 4, 11 ) + "\"" ).c_str() } }, literal_pool );
 		
 		struct pp_master_config : config_pragma_base {
 			phase4 *master;
