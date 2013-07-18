@@ -254,7 +254,7 @@ private:
 			if ( pp_constants::is_concat( * pen ) ) {
 				leading_space = nullptr; // ## operator consumes space
 			} else if ( ! pp_constants::is_stringize( * pen ) || ! function_like ) { // lead is _neither_ ## _nor_ #
-				pass( std::make_move_iterator( acc ), std::make_move_iterator( acc_pen ), (*this) );
+				std::for_each( std::make_move_iterator( acc ), std::make_move_iterator( acc_pen ), std::ref( *this ) );
 				acc[ 1 ] = token(); // be sure to invalidate recursion stop in acc[1]
 				acc_pen = acc;
 				* acc_pen ++ = instantiate_component( inst, pen - def.begin() );
@@ -274,7 +274,7 @@ private:
 				pen += 2; // replacement list doesn't end with # or the space following #
 				stringize = true;
 				if ( ! concat ) { // flush buffered input if this isn't RHS of ##
-					pass( std::make_move_iterator( acc ), std::make_move_iterator( acc_pen ), (*this) );
+					std::for_each( std::make_move_iterator( acc ), std::make_move_iterator( acc_pen ), std::ref( *this ) );
 					acc[ 1 ] = token(); // be sure to invalidate recursion stop in acc[1]
 					if ( leading_space ) (*this)( * leading_space );
 				}
@@ -339,7 +339,7 @@ private:
 					side? arg.trim_begin() : arg.trim_end(); // strip ws from end of lhs and start of rhs
 					
 					instantiate( std::make_shared< macro_substitution >( std::move( acc[ side ] ), arg.begin, arg.end ), // use new instantiation obj
-						[&]( token t ) { copies[ side ].push_back( std::move( t ) ); } ); // instantiate argument for use of parameter
+						pile( [&]( token t ) { copies[ side ].push_back( std::move( t ) ); } ) ); // instantiate argument for use of parameter
 					begins[ side ] = &* copies[ side ].begin(); // Tentatively strip recursion stops; restore if no catenation is done:
 					stripped_stops[ side ] = ! copies[ side ].empty() && copies[ side ].back() == pp_constants::recursion_stop;
 					ends[ side ] = &* copies[ side ].end() - stripped_stops[ side ];
@@ -353,14 +353,14 @@ private:
 						* acc_pen ++ = pp_constants::placemarker;
 						continue;
 					}
-					pass( begins[rhs], ends[rhs] - 1, (*this) ); // LHS is empty; output the RHS
+					std::for_each( begins[rhs], ends[rhs] - 1, std::ref( *this ) ); // LHS is empty; output the RHS
 					* acc_pen ++ = std::move( ends[rhs][ -1 ] ); // just save the last token as intermediate result
 					if ( ! stringize && stripped_stops[rhs] ) {
 						* acc_pen ++ = pp_constants::recursion_stop; // preserve stopper
 					}
 					continue;
 				}
-				pass( begins[lhs], ends[lhs] - 1, (*this) ); // flush the tokens preceding the result
+				std::for_each( begins[lhs], ends[lhs] - 1, std::ref( *this ) ); // flush the tokens preceding the result
 				
 				if ( begins[rhs] == ends[rhs] ) { // RHS is empty; already sent the LHS
 					* acc_pen ++ = std::move( ends[lhs][ -1 ] );
@@ -381,7 +381,7 @@ private:
 				
 				if ( begins[rhs] != ends[rhs] ) {
 					(*this)( std::move( acc[ 0 ] ) ); // flush if not an intermediate result
-					pass( begins[rhs], ends[rhs] - 1, (*this) );
+					std::for_each( begins[rhs], ends[rhs] - 1, std::ref( *this ) );
 					acc[ 0 ] = ends[rhs][ -1 ]; // get a new intermediate result from end of RHS
 					if ( stripped_stops[rhs] ) {
 						* acc_pen ++ = pp_constants::recursion_stop; // preserve stopper
@@ -414,7 +414,7 @@ private:
 				}
 			}
 		}
-		pass( std::make_move_iterator( acc ), std::make_move_iterator( acc_pen ), (*this) );
+		std::for_each( std::make_move_iterator( acc ), std::make_move_iterator( acc_pen ), std::ref( *this ) );
 		replace_object_completely();
 		CPLUS_DO_FINALLY
 	}

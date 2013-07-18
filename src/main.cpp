@@ -100,7 +100,7 @@ int main( int argc, char *argv[] ) {
 			"\"/usr/local/include/c++/4.9.0/x86_64-apple-darwin12.4.0/i386/\"\n"
 	), pile );
 	
-	cplus::pass( std::istreambuf_iterator< char >{ std::cin }, std::istreambuf_iterator< char >{}, pile );
+	pile.pass( std::istreambuf_iterator< char >{ std::cin }, std::istreambuf_iterator< char >{} );
 	finalize( pile );
 	finalize( common_pile );
 }

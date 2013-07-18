@@ -41,67 +41,54 @@ namespace cplus {
 
 struct passed_exception : std::runtime_error { passed_exception() : std::runtime_error( "ICE: Failed to stop exception propagation after normal handling." ) {} };
 
-void finalize( util::poor_conversion const & ) {} // fallback overload, worse than derived-to-base conversion
-
 // pass() puts input into a stage (functor or iterator) or its succeeding stages, catches thrown exceptions and feeds them back in.
 enum class pass_policy { mandatory, optional, enable_if };
 enum class diagnose_policy { none, pass, fatal }; // Apply to either sender or receiver. Sender cannot specify none.
 
-template< pass_policy = {}, typename oit, typename v >
-auto pass( oit it, v && val )
-	-> typename util::mention< decltype( * it ++ = std::forward< v >( val ) ) >::type
-	{ * it ++ = std::forward< v >( val ); }
+namespace impl {
+	template< typename base, typename v, typename = void >
+	struct is_output_iterable : std::false_type {};
+	
+	template< typename output, typename v >
+	struct is_output_iterable< output, v, typename util::mention< decltype( * std::declval< output & >() ++ = std::declval< v >() ) >::type > : std::true_type {};
+	
+	template< typename base, typename, typename = void >
+	struct is_callable : std::false_type {};
+	
+	template< typename base, typename v >
+	struct is_callable< base, v, typename util::mention<decltype( std::declval< base & >() ( std::declval< v >() ) )>::type > : std::true_type {};
+	
+	template< typename base, typename v > // GCC workaround: usual trait definition style produces strange, inconsistent results.
+	constexpr bool is_passable_fn( ... ) { return false; }
+	
+	template< typename base, typename v >
+	constexpr decltype ( std::declval< typename base::stage & >().template pass< pass_policy::enable_if >( std::declval< v >() ), true )
+	is_passable_fn( int ) { return true; }
+	
+	template< typename base, typename v, bool r = is_passable_fn< base, v >(0) >
+	struct is_passable : std::integral_constant< bool, r > {};
 
-template< pass_policy = {}, typename fn, typename v >
-typename util::mention< typename std::result_of< fn &( v ) >::type >::type
-pass( fn && obj, v && val ) {
-	try {
-		obj( std::forward< v >( val ) );
-	} catch ( passed_exception & ) {}
-	if ( ! std::is_reference< fn >::value ) finalize( obj );
+	template< typename t > struct remove_reference_wrapper { typedef t type; };
+	template< typename t > struct remove_reference_wrapper< std::reference_wrapper< t > > { typedef t type; };
 }
 
-template< pass_policy policy = pass_policy::mandatory >
-typename std::enable_if< policy != pass_policy::enable_if, pass_policy >::type // to see overload resolution errors, specify enable_if.
-pass( util::poor_conversion, util::poor_conversion ) { static_assert( policy == pass_policy::optional, "invalid pass argument" ); return pass_policy::optional; }
-
-template< pass_policy policy = pass_policy::mandatory, typename fn, typename v > // Qualified-id avoids ADL and prevents recursion, tag enables ADL and recursion.
-typename std::enable_if< std::is_same< decltype( cplus::pass< pass_policy::optional >( std::declval< fn >(), std::declval< v >() ) ), pass_policy >::value,
-	typename util::mention< decltype( pass< pass_policy::enable_if >( std::declval< fn >().cont, std::declval< v >() ) ) >::type >::type
-pass( fn && obj, v && val )
-	{ pass< policy >( std::forward< fn >( obj ).cont, std::forward< v >( val ) ); }
-
-template< pass_policy policy = pass_policy::mandatory, typename w, typename v >
-typename util::mention< decltype( pass< pass_policy::enable_if >( std::declval< w & >(), std::declval< v >() ) ) >::type
-pass( std::reference_wrapper< w > wrap, v && val )
-	{ pass< policy >( wrap.get(), std::forward< v >( val ) ); }
-
-template< pass_policy policy = pass_policy::mandatory, typename obj, typename iit >
-auto
-#if __GNUC__
-	pass_some
-#else
-	pass
-#endif
-			( iit first, iit last, obj && o )
-	-> typename util::mention< decltype( pass< policy >( o, * first ) ) >::type {
-	for ( ; first != last; ++ first ) {
-		pass< policy >( o, * first );
-	}
-	if ( ! std::is_reference< obj >::value ) finalize( o );
-}
-
-#if __GNUC__
-template< pass_policy policy = pass_policy::mandatory, typename obj, typename iit >
-typename util::mention< decltype( pass_some< policy >( std::declval< iit >(), std::declval< iit >(), std::declval< obj >() ) ) >::type
-pass( iit first, iit last, obj && o )
-	{ return pass_some< policy >( first, last, std::forward< obj >( o ) ); }
-#endif
+void finalize( util::poor_conversion const & ) {} // fallback overload, worse than derived-to-base conversion
 
 // Adaptor for deriving one stage from another and using base's output iterator.
 template< typename base_type, typename ... config_types >
 class derived_stage : public base_type {
 	std::tuple< config_types const & ... > configs;
+	
+	void operator () () = delete; // pass() is a requirement for communication up the stack.
+	
+	template< typename t >
+	typename std::enable_if< ! std::is_base_of< std::exception, typename std::decay< t >::type >::value >::type
+	pass_or_diagnose( t && o ) { pass( std::forward< t >( o ) ); }
+	
+	template< typename t > // Virtual-dispatch to a surrogate error receiver when none is implemented.
+	typename std::enable_if< std::is_base_of< std::exception, typename std::decay< t >::type >::value >::type
+	pass_or_diagnose( t && o ) { diagnose< diagnose_policy::pass, t >( true, std::forward< t >( o ) ); }
+	
 	struct tag {};
 public:
 	typedef base_type base;
@@ -131,10 +118,6 @@ public:
 		std::tuple< acc_config ... > && cacc, args && ... a )
 		: base( std::forward< args >( a ) ... ), configs( std::move( cacc ) ) {}
 	
-	template< typename ... t >
-	util::function< void( t ) ... > pass_function()
-		{ return { std::bind( static_cast< void (derived_stage::*) ( t ) >( & derived_stage::pass ), this, std::placeholders::_1 ) ... }; }
-	
 	template< typename client = typename std::tuple_element< 0, std::tuple< config_types const ..., void > >::type >
 	typename std::enable_if< util::tuple_index< client &, decltype( configs ) >::value != ( sizeof ... ( config_types ) ), client & >::type
 	get_config() { return std::get< util::tuple_index< client &, decltype( configs ) >::value >( configs ); }
@@ -143,15 +126,49 @@ public:
 	typename std::enable_if< ( typename util::mention< decltype( std::declval< base >().template get_config< client >() ) >::type(),
 		util::tuple_index< client &, decltype( configs ) >::value == ( sizeof ... ( config_types ) ) ), client & >::type
 	get_config() { return base::template get_config< client >(); }
-
-	template< pass_policy policy = pass_policy::mandatory, typename v >
-	void pass( v && val ) { cplus::pass< policy >( * this, std::forward< v >( val ) ); }
-
-	template< pass_policy policy = pass_policy::mandatory, typename iit >
-	void pass( iit first, iit last ) { cplus::pass< policy >( first, last, * this ); }
-
+	
+	template< pass_policy policy = pass_policy::mandatory >
+	static typename std::enable_if< policy != pass_policy::enable_if >::type // to see overload resolution errors, specify enable_if.
+	pass( util::poor_conversion ) { static_assert( policy == pass_policy::optional, "invalid pass argument" ); }
+	
+	template< pass_policy = pass_policy::mandatory, typename arg >
+	typename std::enable_if< impl::is_callable< base_type, arg >::value >::type
+	pass( arg && a ) & // Pass along the chain or to immediate superclass.
+		try { this->base_type::operator () ( std::forward< arg >( a ) ); }
+		catch ( passed_exception & ) {}
+	
+	template< pass_policy policy = pass_policy::mandatory, typename arg >
+	typename std::enable_if< ! impl::is_callable< base_type, arg >::value && impl::is_passable< base_type, arg >::value >::type
+	pass( arg && a ) & // Pass to derived_stage recursive base.
+		{ this->base_type::stage::template pass< policy >( std::forward< arg >( a ) ); }
+	
+	template< pass_policy policy = pass_policy::mandatory, typename arg >
+	typename std::enable_if< policy != pass_policy::enable_if || impl::is_callable< base_type, arg >::value || impl::is_passable< base_type, arg >::value >::type
+	pass( arg && a ) && {
+		pass< policy >( std::forward< arg >( a ) );
+		finalize( * this );
+	}
+	
+	template< pass_policy policy = pass_policy::mandatory, typename iter >
+	typename std::enable_if< policy != pass_policy::enable_if || impl::is_callable< base_type, typename std::iterator_traits< iter >::reference >::value
+							|| impl::is_passable< base_type, typename std::iterator_traits< iter >::reference >::value >::type
+	pass( iter first, iter last ) &
+		{ for ( ; first != last; ++ first ) pass< policy >( * first ); }
+	
+	template< pass_policy policy = pass_policy::mandatory, typename iter >
+	typename std::enable_if< policy != pass_policy::enable_if || impl::is_callable< base_type, typename std::iterator_traits< iter >::reference >::value
+							|| impl::is_passable< base_type, typename std::iterator_traits< iter >::reference >::value >::type
+	pass( iter first, iter last ) && {
+		pass< policy >( first, last );
+		finalize( * this );
+	}
+	
+	template< typename ... t >
+	util::function< void( t ) ... > pass_function()
+		{ return { std::bind( static_cast< void (derived_stage::*) ( t ) >( & derived_stage::pass_or_diagnose ), this, std::placeholders::_1 ) ... }; }
+	
 	template< diagnose_policy policy, typename exception_type, typename ... args >
-	typename std::enable_if< std::is_void< decltype( cplus::pass( std::declval< derived_stage & >(), std::declval< exception_type >() ) ) >::value, bool >::type
+	typename std::enable_if< impl::is_passable< stage, exception_type >::value, bool >::type
 	diagnose( bool condition, args && ... a ) {
 		if ( condition ) {
 			pass< pass_policy::mandatory >( exception_type( std::forward< args >( a ) ... ) );
@@ -161,7 +178,7 @@ public:
 	}
 	
 	template< diagnose_policy policy, typename exception_type, typename ... args >
-	typename std::enable_if< ! std::is_void< decltype( cplus::pass( std::declval< derived_stage & >(), std::declval< exception_type >() ) ) >::value, bool >::type
+	typename std::enable_if< ! impl::is_passable< stage, exception_type >::value, bool >::type
 	diagnose( bool condition, args && ... a ) {
 		if ( condition ) throw exception_type( std::forward< args >( a ) ... );
 		return false;
@@ -169,28 +186,32 @@ public:
 };
 
 // Non-virtual abstract base class.
-template< typename output >
+template< typename output_mem >
 struct stage_base {
-	output cont;
+	typedef typename impl::remove_reference_wrapper< output_mem >::type output_type;
+	output_mem cont;
 	
 	template< typename ... args >
 	stage_base( args && ... a ) : cont( std::forward< args >( a ) ... ) {}
-
-	template< typename client >
-	typename std::enable_if< ( typename util::mention< decltype( cont.template get_config< client >() ) >::type(), true ), client & >::type
-	get_config() { return cont.template get_config< client >(); }
-};
-
-template< typename output >
-struct stage_base< std::reference_wrapper< output > > {
-	std::reference_wrapper< output > cont;
 	
-	template< typename ... args >
-	stage_base( args && ... a ) : cont( std::forward< args >( a ) ... ) {}
-
+	template< typename v >
+	typename std::enable_if< impl::is_output_iterable< output_type, v >::value >::type
+	operator () ( v && val )
+		{ * cont ++ = std::forward< v >( val ); }
+	
+	template< typename v >
+	typename std::enable_if< impl::is_callable< output_type, v >::value >::type
+	operator () ( v && val )
+		try { cont( std::forward< v >( val ) ); }
+		catch ( passed_exception & ) {}
+	
+	template< typename v >
+	typename std::enable_if< ! impl::is_callable< output_type, v >::value && impl::is_passable< output_type, v >::value >::type
+	operator () ( v && val ) { static_cast< output_type & >( cont ).output_type::stage::pass( std::forward< v >( val ) ); }
+	
 	template< typename client >
-	typename std::enable_if< ( typename util::mention< decltype( cont.get().template get_config< client >() ) >::type(), true ), client & >::type
-	get_config() { return cont.get().template get_config< client >(); }
+	typename std::enable_if< ( typename util::mention< decltype( std::declval< output_type & >().template get_config< client >() ) >::type(), true ), client & >::type
+	get_config() { return static_cast< output_type & >( cont ).template get_config< client >(); }
 };
 
 template< typename output_iterator, typename ... config_types >
@@ -277,7 +298,7 @@ private:
 	static typename std::enable_if< ! std::is_same< construct const &, decltype( std::declval< instantiation_derived >().component(0) ) >::value >::type
 	instantiate( std::shared_ptr< instantiation_derived > const &inst, pile & p ) {
 		for ( std::size_t i = 0; i != inst->size(); ++ i ) {
-			pass( p, instantiate_component( inst, i ) );
+			p.pass( instantiate_component( inst, i ) );
 		}
 	}
 
@@ -336,7 +357,7 @@ struct input_source : instantiation {
 		rc.construct::operator = ( source_link( std::move( inst ), 0 ) );
 		inst_p->filter( [&p, &rc]( uint8_t c ) {
 			rc.c = c;
-			pass( p, rc );
+			p.pass( rc );
 			advance( rc );
 		} );
 	}

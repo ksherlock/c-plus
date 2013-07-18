@@ -146,10 +146,10 @@ class phase4
 		)
 		
 		auto filter = pile< macro_filter >( std::back_inserter( ret ) );
-		pass( std::make_move_iterator( first ), std::make_move_iterator( last ),
-			pile< macro_context >(
-				static_cast< macro_context_info & >( * this ),
-				util::function< void( token && ), void( error && ) >( std::ref( filter ), this->template pass_function< error && >() ) ) );
+		pile< macro_context >(
+			static_cast< macro_context_info & >( * this ),
+			util::function< void( token && ), void( error && ) >( filter.template pass_function< token && >(), this->template pass_function< error && >() )
+		).pass( std::make_move_iterator( first ), std::make_move_iterator( last ) );
 		
 		CPLUS_DO_FINALLY
 		return ret;
@@ -216,19 +216,19 @@ class phase4
 			arg.swap( input );
 			CPLUS_FINALLY(
 				input.clear();
-				pass( * this, std::move( arg.front() ) );
+				input.push_back( std::move( arg.front() ) );
 			)
 			
 			tokens intro = { pp_constants::pragma_operator, pp_constants::lparen, pp_constants::stringize_macro, pp_constants::lparen };
-			pass( std::make_move_iterator( intro.begin() ), std::make_move_iterator( intro.end() ), * this );
-			pass( std::make_move_iterator( ++ pen ), std::make_move_iterator( arg.end() ), * this ); // Swapping container preserves iterators.
+			this->pass( std::make_move_iterator( intro.begin() ), std::make_move_iterator( intro.end() ) );
+			this->pass( std::make_move_iterator( ++ pen ), std::make_move_iterator( arg.end() ) ); // Swapping container preserves iterators.
 			
 			this->template diagnose< diagnose_policy::pass, error >( this->paren_depth != 1, // Not infallible, but #pragma is implementation-defined anyway.
 				arg.back(), "Parens must balance in #pragma." );
 			while ( this->paren_depth != 0 ) {
-				pass( * this, util::val( pp_constants::rparen ) ); // Close the stringize macro (and whatever the user left unbalanced).
+				this->pass( util::val( pp_constants::rparen ) ); // Close the stringize macro (and whatever the user left unbalanced).
 			}
-			pass( * this, util::val( pp_constants::rparen ) ); // Terminate the _Pragma operator which is not a macro.
+			this->pass( util::val( pp_constants::rparen ) ); // Terminate the _Pragma operator which is not a macro.
 			CPLUS_DO_FINALLY // Keep accumulating whitespace.
 		
 		} else if ( * pen == pp_constants::else_directive || * pen == pp_constants::endif_directive
@@ -546,7 +546,7 @@ public:
 				tokens comment_directive{ line_marker, { line_macro.type, line_macro.s, in }, space, file_macro, in.s[0] != '\n'? newline : placemarker };
 				for ( auto &t : process_macros( comment_directive.begin(), comment_directive.end() ) ) {
 					t.type = token_type::ws;
-					phase4::base::operator() ( std::move( t ) );
+					this->pass( std::move( t ) );
 				}
 			}
 			state = normal;
@@ -569,7 +569,7 @@ public:
 					return;
 				}
 			}
-			phase4::base::operator() ( std::move( in ) );
+			this->pass( std::move( in ) );
 			return;
 		
 		case directive:
@@ -633,7 +633,7 @@ public:
 		if ( state == directive ) { // If there is no terminating newline, it isn't a directive. Reprocess the tokens as garbage.
 			tokens redo;
 			redo.swap( input );
-			pass( std::make_move_iterator( redo.begin() ), std::make_move_iterator( redo.end() ), static_cast< derived_stage & >( * this ) );
+			this->pass( std::make_move_iterator( redo.begin() ), std::make_move_iterator( redo.end() ) );
 		}
 		state = normal;
 	}
