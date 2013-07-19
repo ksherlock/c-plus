@@ -353,6 +353,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 						in_directive = true;
 						if ( char_in_set( char_set::initial, c ) ) {
 							token.type = state = directive; // kludge
+							token.construct::operator = ( in );
 						}
 						goto punct_passed;
 					} else token.type = punct;
