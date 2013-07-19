@@ -239,8 +239,7 @@ private:
 		auto lex_acc = pile( lex_acc_stage( * this ) );
 		
 		token acc[ 2 ], *acc_pen = acc; // [0] is LHS, [1] is RHS from stringize or LHS recursion stop
-		token const *leading_space = nullptr;
-		for ( auto pen = def.begin() + args_info.size() + function_like + 1 /* skip args, ")", and leading space */; pen != def.end(); leading_space = &* pen - 1  ) {
+		for ( auto pen = def.begin() + args_info.size() + function_like + 1 /* skip args, ")", and leading space */; pen != def.end(); ) {
 			/* Each iteration handles some subset of the sequence <token> ## # <token>:
 							leading_token			! leading_token
 				neither		<lhs>					-
@@ -251,6 +250,7 @@ private:
 			
 			bool stringize = false, concat = false, leading_token = false;
 			
+			token const * leading_space = pen[ -1 ] == pp_constants::placemarker? nullptr : & pen[ -1 ];
 			if ( pp_constants::is_concat( * pen ) ) {
 				leading_space = nullptr; // ## operator consumes space
 			} else if ( ! pp_constants::is_stringize( * pen ) || ! function_like ) { // lead is _neither_ ## _nor_ #
