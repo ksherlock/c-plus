@@ -26,15 +26,15 @@ void point_at_inclusion( construct const &t ) {
 		in.exceptions( std::ios::badbit | std::ios::failbit );
 		std::cerr.exceptions( std::ios::badbit | std::ios::failbit );
 		
-		std::size_t line = 1, column = std::max( std::get< 1 >( t.get_location< inclusion >() ), 1ull );
+		std::size_t line = 1, column = std::get< 1 >( t.get_location< inclusion >() );
 		std::string line_text;
-		while ( getline( in, line_text ) && column > line_text.size() + 1 ) column -= line_text.size() + 1, ++ line;
+		while ( getline( in, line_text ) && column >= line_text.size() + 1 ) column -= line_text.size() + 1, ++ line;
 		
 		std::cerr << line_text << '\n';
 		std::replace_copy_if( & line_text[0], & line_text[0] + column, // align caret with error
 			std::ostream_iterator< char >( std::cerr ),
 			std::bind1st( std::not_equal_to< char >(), '\t' ), ' ' ); // preserve tabs for spacing on console
-		std::cerr << "^ here\n" << source->path << ": line " << line << ", column " << column << '\n';
+		std::cerr << "^ here\n" << source->path << ": line " << line << ", column " << column + 1 << '\n';
 	} catch ( std::ios::failure & ) {
 		if ( in.eof() ) std::cerr << "at end of input\n";
 		else std::perror( "I/O error while printing context" );
