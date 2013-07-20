@@ -588,7 +588,9 @@ public:
 			}
 			directive = false;
 			
-			token const &directive = input[ 1 ];
+			auto directive_it = input.begin() + 1;
+			if ( pp_constants::skip_space( directive_it, input.end() ) == input.end() ) return;
+			token const &directive = * directive_it;
 			if ( directive == pp_constants::if_directive || directive == pp_constants::ifdef_directive
 				|| directive == pp_constants::ifndef_directive ) {
 				++ skip_depth;
