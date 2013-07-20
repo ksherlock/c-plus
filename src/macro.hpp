@@ -497,7 +497,7 @@ public:
 			nargs = replacement.size(); // Includes ")" so nonzero if function-like.
 			
 		} else {
-			while ( token_semantic_equal( * pen, placemarker ) ) ++ pen;
+			while ( pen != input.end() && token_semantic_equal( * pen, placemarker ) ) ++ pen;
 			this->template diagnose< diagnose_policy::pass, error >( pen != input.end() && ! token_semantic_equal( * pen, space ),
 				* pen, "An object-like macro definition must begin with whitespace (§16.3/3)." );
 		}
