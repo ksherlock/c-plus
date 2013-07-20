@@ -45,8 +45,8 @@ namespace char_set {
 	
 	constexpr char_bitmap const *safe_chars[] = {
 		&none /* ws */, &ascii_alnum /* id */, &ascii_alnum_not_exponent /* num */, &none /* todo, multipunct for punct */,
-		&none, &none, &ascii_alnum, &none, &none, /* string_lit, char_lit, directive, header_name, misc */
-		&none, &none, &none, &none, /* escape, exponent, ud_suffix, rstring */
+		&none, &none, &none, &none, /* string_lit, char_lit, header_name, misc */
+		&none, &none, &ascii_alnum, &none, &none, /* escape, exponent, directive, ud_suffix, rstring */
 		&line_space /* space_run */, &space_not_vt /* after_newline */,
 		&anything_not_newline /* line_comment */, &not_block_termination /* block_comment */, &none /* initial */
 	};
@@ -57,7 +57,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 	token_type_import_base {
 	
 	enum states {
-		escape = token_type_last, exponent, ud_suffix, rstring, space_run, after_newline, line_comment, block_comment, initial
+		escape = token_type_last, exponent, directive, ud_suffix, rstring, space_run, after_newline, line_comment, block_comment, initial
 	};
 	int state, state_after_space;
 	bool in_directive; // only serves to diagnose whitespace restriction of §16/4
@@ -173,22 +173,24 @@ class phase3 : public stage< output_iterator, phase3_config >,
 				return;
 			
 			} else {
-				if ( ! token.s.empty() ) {
-					if ( state == after_newline ) state_after_space = after_newline;
+				if ( ! token.s.empty() ) { // Filter empty whitespace tokens, but always advance state to state_after_space.
+					if ( state == after_newline ) state_after_space = after_newline; // Newline cancels state_after_space, i.e. directive and header name detection.
 					token.type = ws;
-					pass(); // empty whitespace tokens are filtered and do not use state_after_space
-				}
+					pass();
+				} else state = state_after_space;
 				
 				token.construct::operator = ( in );
-				if ( state != ws && state != after_newline && state != space_run ) {
-					continue; // go to state_after_space
+				if ( state != ws && state != after_newline ) {
+					token.type = state;
+					continue; // Go to state_after_space.
 				}
+			redispatch: // Come back from state_after_space rejection.
 				unshift( in );
 				
 				if ( char_in_set( char_set::punct, c ) ) {
 					if ( char_in_set( char_set::multipunct, c ) ) {
 						// tentatively set type to directive if it could possibly be the opening #
-						token.type = state == after_newline? directive : punct;
+						token.type = state == after_newline? static_cast< int >( directive ) : static_cast< int >( punct );
 						state = punct;
 						punct_lower = multichar_punctuators;
 						punct_upper = multichar_punctuators_end;
@@ -213,8 +215,9 @@ class phase3 : public stage< output_iterator, phase3_config >,
 				return;
 			}
 		
-		case id: // includes string and char literal suffixes
 		case directive:
+			token.type = id;
+		case id: // Includes ud-suffix after initial character.
 			if ( char_in_set( char_set::identifier, c ) ) {
 				unshift( in );
 				return;
@@ -225,8 +228,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 					if ( id_punct == include_directive ) {
 						if ( state == directive ) {
 							pass();
-							token.type = state = state_after_space = header_name;
-							token.construct::operator = ( in );
+							state_after_space = header_name;
 							continue;
 						} else goto got_id;
 					} else {
@@ -271,7 +273,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 						}
 					}
 				got_id:
-					if ( token.s.empty() ) token.type = state = ws; // state_after_space may still be directive
+					if ( token.s.empty() ) goto redispatch; // state_after_space is still directive
 					else pass();
 					continue;
 				}
@@ -346,26 +348,28 @@ class phase3 : public stage< output_iterator, phase3_config >,
 				}
 				token.s.resize( match_size ); // make token a copy of punct_match
 				
+				std::vector< pp_char > retry;
+				retry.swap( input_buffer ); // Buffer will be clear if any pass throws (and meaningful chars lost).
+				
 				if ( token.type == directive ) {
-					if ( punct_match == hash_alt || token.s == pp_constants::hash.s ) {
-						pass();
+					token.type = punct;
+					if ( punct_match == hash_alt || token == pp_constants::stringize ) {
+						CPLUS_FINALLY (
+							state = ws;
+							token = {};
+						)
 						state_after_space = directive;
 						in_directive = true;
-						if ( char_in_set( char_set::initial, c ) ) {
-							token.type = state = directive; // kludge
-							token.construct::operator = ( in );
-						}
+						phase3::stage::pass( directive_first_token( std::move( token ) ) );
+						
 						goto punct_passed;
-					} else token.type = punct;
+						CPLUS_DO_FINALLY
+					}
 				}
 				pass();
 			punct_passed:
-				std::vector< pp_char > retry( std::move( input_buffer ) );
-				input_buffer.clear();
-				for ( auto p = retry.begin() + match_size - 1; p != retry.end(); ++ p ) {
-					(*this)( * p ); // retry input that wasn't handled before
-				}
-				return (*this)( std::move( in ) ); // send UTF-8 back to utf8_decode (again)
+				std::for_each( retry.begin() + match_size - 1, retry.end(), std::ref( * this ) ); // Retry non-matched punctuation and UTF-8 lead sequence.
+				return (*this)( std::move( in ) );
 			}
 		
 		case block_comment:
@@ -481,8 +485,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 				
 				else if ( input_buffer.empty() ) {
 					if ( c != '<' && c != '\"' ) {
-						token.type = state = ws; // state_after_space is already header_name
-						continue;
+						goto redispatch; // state_after_space is already header_name
 					}
 				} else if ( ( input_buffer[0].c == '<' && c == '>' )
 						 || ( input_buffer[0].c == '\"' && c == '\"' ) ) {
@@ -560,16 +563,16 @@ class phase3 : public stage< output_iterator, phase3_config >,
 	
 	void header_name_retry( pp_char const & in ) {
 		token.type = state = state_after_space = ws;
-		auto trailing_ws = std::move( token ); // save any trailing space
+		auto trailing_ws = std::move( token ); // Save any trailing space.
 		token.s.clear();
 		
 		std::vector< pp_char > input_back;
 		swap( input_back, input_buffer );
 		for ( auto && p : input_back ) (*this)( p );
 		
-		if ( ! trailing_ws.s.empty() ) { // restore saved space
-			(*this)( { { static_cast< std::uint8_t >( trailing_ws.s[0] ), std::move( trailing_ws ) }, pp_char_source::normal } );
-			token = std::move( trailing_ws );
+		if ( ! trailing_ws.s.empty() ) { // Restore saved space into a single token; locations of individual comments are lost.
+			(*this)( { { ' ', std::move( trailing_ws ) }, pp_char_source::normal } );
+			if ( this->get_config().preserve_space ) token = std::move( trailing_ws );
 		}
 		(*this)( in );
 	}
