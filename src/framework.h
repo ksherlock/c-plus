@@ -62,14 +62,11 @@ namespace impl {
 	constexpr bool is_passable_fn( ... ) { return false; }
 	
 	template< typename base, typename v >
-	constexpr decltype ( std::declval< typename base::stage & >().template pass< pass_policy::enable_if >( std::declval< v >() ), true )
+	constexpr decltype ( std::declval< typename std::decay< base >::type::stage & >().template pass< pass_policy::enable_if >( std::declval< v >() ), true )
 	is_passable_fn( int ) { return true; }
 	
 	template< typename base, typename v, bool r = is_passable_fn< base, v >(0) >
 	struct is_passable : std::integral_constant< bool, r > {};
-
-	template< typename t > struct remove_reference_wrapper { typedef t type; };
-	template< typename t > struct remove_reference_wrapper< std::reference_wrapper< t > > { typedef t type; };
 }
 
 void finalize( util::poor_conversion const & ) {} // fallback overload, worse than derived-to-base conversion
@@ -185,11 +182,20 @@ public:
 	}
 };
 
+namespace impl {
+	template< typename t, typename = void >
+	struct strip_derived_stage { typedef t type; };
+	// Remove derived_stage interface from output types to simplify making *this coincide with a specialization from pile().
+	template< typename t >
+	struct strip_derived_stage< derived_stage< t > & > { typedef t & type; };
+	template< typename t >
+	struct strip_derived_stage< derived_stage< t > > { typedef t type; };
+}
+
 // Non-virtual abstract base class.
-template< typename output_mem >
+template< typename output_type >
 struct stage_base {
-	typedef typename impl::remove_reference_wrapper< output_mem >::type output_type;
-	output_mem cont;
+	output_type cont;
 	
 	template< typename ... args >
 	stage_base( args && ... a ) : cont( std::forward< args >( a ) ... ) {}
@@ -207,11 +213,11 @@ struct stage_base {
 	
 	template< typename v >
 	typename std::enable_if< ! impl::is_callable< output_type, v >::value && impl::is_passable< output_type, v >::value >::type
-	operator () ( v && val ) { static_cast< output_type & >( cont ).output_type::stage::pass( std::forward< v >( val ) ); }
+	operator () ( v && val ) { cont.::std::decay< output_type >::type::stage::pass( std::forward< v >( val ) ); }
 	
 	template< typename client >
 	typename std::enable_if< ( typename util::mention< decltype( std::declval< output_type & >().template get_config< client >() ) >::type(), true ), client & >::type
-	get_config() { return static_cast< output_type & >( cont ).template get_config< client >(); }
+	get_config() { return cont.template get_config< client >(); }
 };
 
 template< typename output_iterator, typename ... config_types >
@@ -234,7 +240,7 @@ finalize( s &o ) {
 	try {
 		o.flush();
 	} catch ( passed_exception & ) {}
-	finalize( o.cont );
+	if ( ! std::is_reference< decltype( o.cont ) >::value ) finalize( o.cont ); // Only finalizing rvalues would be more consistent, but error-prone.
 }
 
 typedef std::uint64_t location_t;
@@ -425,7 +431,7 @@ struct stack_stages;
 
 template< typename cont >
 struct stack_stages< cont >
-	{ typedef cont type; };
+	{ typedef typename impl::strip_derived_stage< cont >::type type; };
 
 template< typename cont, template< typename ... > class stage, template< typename ... > class ... rem >
 struct stack_stages< cont, stage, rem ... >

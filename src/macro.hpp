@@ -206,8 +206,8 @@ private:
 		}
 		
 		// Use a local copy of phase 3 to generate tokens one at a time as intermediate results.
-		struct lex_acc_stage : stage< std::reference_wrapper< macro_context > > {
-			using stage< std::reference_wrapper< macro_context > >::stage;
+		struct lex_acc_stage : stage< macro_context & > {
+			using lex_acc_stage::stage::stage;
 			
 			bool lex_error = false;
 			std::vector< token > output;

@@ -477,7 +477,7 @@ class phase4
 		
 		state = entering;
 		instantiate( std::make_shared< inclusion >( std::move( access.path ), std::move( access.source ) ),
-			pile< phase1_2, phase3 >( std::ref( * this ) ) );
+			pile< phase1_2, phase3 >( * this ) );
 		
 		if ( guard_detect.valid && guard_detect.depth == conditional_depth ) {
 			guard_current_header();

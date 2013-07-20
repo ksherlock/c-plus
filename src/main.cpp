@@ -84,7 +84,7 @@ int main( int argc, char *argv[] ) {
 		)
 	);
 	
-	auto && pile = cplus::pile< cplus::phase1_2, cplus::phase3 >( std::ref( common_pile ) );
+	auto && pile = cplus::pile< cplus::phase1_2, cplus::phase3 >( common_pile );
 
 	instantiate( std::make_shared< cplus::raw_text >(
 		"#define __STDC__ 1\n"
