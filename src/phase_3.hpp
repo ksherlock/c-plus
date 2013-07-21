@@ -147,10 +147,15 @@ class phase3 : public stage< output_iterator, phase3_config >,
 				if ( this->get_config().preserve_space && ! token.s.empty() ) {
 					pass();
 				}
-				token.construct::operator = ( in );
+				if ( in_directive ) {
+					phase3::stage::template pass< pass_policy::optional >( delimiter< struct directive, delimiter_sense::close >( in ) );
+					in_directive = false;
+				}
+				if ( token.s.empty() ) {
+					token.construct::operator = ( in );
+				}
 				token.assign_content( pp_constants::newline );
 				if ( this->get_config().preserve_space ) token = token.reallocate( this->get_config().stream_pool ); // re-open to append
-				in_directive = false;
 				state = after_newline;
 				state_after_space = ws; // cancel looking for directive or header name
 				return;
@@ -354,16 +359,12 @@ class phase3 : public stage< output_iterator, phase3_config >,
 				if ( token.type == directive ) {
 					token.type = punct;
 					if ( punct_match == hash_alt || token == pp_constants::stringize ) {
-						CPLUS_FINALLY (
-							state = ws;
-							token = {};
-						)
+						phase3::stage::template pass< pass_policy::optional >( delimiter< struct directive, delimiter_sense::open >( token ) );
+						pass();
 						state_after_space = directive;
 						in_directive = true;
-						phase3::stage::pass( directive_first_token( std::move( token ) ) );
 						
 						goto punct_passed;
-						CPLUS_DO_FINALLY
 					}
 				}
 				pass();

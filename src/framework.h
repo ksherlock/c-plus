@@ -327,6 +327,11 @@ construct const *construct::advance_to_source() const {
 	return ret? this : source->advance_to_source< instantiation_derived >();
 }
 
+// Generic construct classes.
+enum class delimiter_sense : bool { open, close };
+template< typename, delimiter_sense > // Announce downstream the scope of a higher-level construct.
+struct delimiter : construct { explicit delimiter( construct c ) : construct( std::move( c ) ) {} };
+
 // Error reporting format.
 class error_base : public std::runtime_error {
 	std::unique_ptr< construct const, void (*)( construct const * ) > p;

@@ -66,9 +66,6 @@ struct phase1_2_config : config_pragma_base {
 // Output format for Phases 3-4
 CPLUS_IMPORTABLE_ENUM( token_type, ws, id, num, punct, string_lit, char_lit, header_name, misc )
 
-struct directive_first_token : token
-	{ explicit directive_first_token( token in ) : token( std::move( in ) ) {} };
-
 bool token_semantic_equal( token const & l, token const & r ) {
 	if ( l.type != token_type::ws || r.type != token_type::ws ) return l.type == r.type && l.s == r.s;
 	auto all_splices = []( string const & in ) {
@@ -142,6 +139,7 @@ struct phase4_config : config_pragma_base {
 	phase4_config() : macro_pool( "macro" ) {}
 };
 
+struct directive; // Undefined, but used for delimiter< directive >.
 struct pragma : construct {
 	string s;
 	pragma( string in_s, construct in_c ) : construct( std::move( in_c ) ), s( std::move( in_s ) ) {}

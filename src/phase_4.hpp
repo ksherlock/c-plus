@@ -165,8 +165,9 @@ class phase4
 	void handle_directive() {
 		using pp_constants::skip_space;
 		
-		tokens::iterator pen = input.begin() + 1;
-		skip_space( pen, input.end() );
+		tokens::iterator pen = input.begin() + 2; // Skip space accumulator and #.
+		skip_space( pen, input.end() ); // Skip succeeding space; it won't be accumulated.
+		input[ 1 ].assign_content( pp_constants::placemarker ); // Clear the redundant # token.
 		
 		bool is_include = false; // handle_header does its own input.resize( 1 ) before entering the header.
 		CPLUS_FINALLY(
@@ -528,69 +529,28 @@ public:
 		this->cont.template get_config< pp_master_config >().master = this; // restrictive to assume cont has config manager
 	}
 	
-	void operator () ( directive_first_token && in ) { // Consume and discard the # introducing a directive.
-		if ( this->template diagnose< diagnose_policy::pass, error >( this->paren_depth != 0, in, "A macro invocation cannot span a directive (§16.3/11)." ) )
-			return operator () ( static_cast< token && >( in ) );
+	token const & directive_id() {
+		auto directive_it = input.begin() + 2; // First character is space and next character is #.
+		return pp_constants::skip_space( directive_it, input.end() ) != input.end()? * directive_it : pp_constants::placemarker;
+	}
+	
+	void operator () ( delimiter< struct directive, delimiter_sense::open > in ) {
+		this->template diagnose< diagnose_policy::pass, error >( this->paren_depth != 0, in, "A macro invocation cannot span a directive (§16.3/11)." );
 		
 		if ( input.empty() ) input.push_back( pp_constants::placemarker ); // Ensure there is whitespace before the directive.
 		this->pass( std::make_move_iterator( input.begin() ), std::make_move_iterator( input.end() - 1 ) ); // Flush uncalled function.
 		input.erase( input.begin(), input.end() - 1 ); // Save trailing space token.
 		directive = true;
+		this->template pass< pass_policy::optional >( std::move( in ) );
 	}
-	
-	void operator () ( token && in ) {
-		using pp_constants::skip_space;
-		
-		switch ( state ) {
-		case entering: // one-shot state simply inserts whitespace #line directive if preserving space
-			if ( this->token_config.preserve_space && in.get_parent< input_source >() ) {
-				using namespace pp_constants;
-				tokens comment_directive{ line_marker, { line_macro.type, line_macro.s, in }, space, file_macro, in.s[0] != '\n'? newline : placemarker };
-				for ( auto &t : process_macros( comment_directive.begin(), comment_directive.end() ) ) {
-					t.type = token_type::ws;
-					this->pass( std::move( t ) );
-				}
-			}
-			state = normal;
-		
-		case normal:
-			if ( ! directive ) {
-				this->template diagnose< diagnose_policy::pass, error >( in == pp_constants::variadic, in, "The identifier __VA_ARGS__ is reserved (§16.3/5)." );
-				
-				if ( guard_detect.depth == conditional_depth && in.type != token_type::ws ) {
-					guard_detect.valid = false; // Anything besides a directive outside guard cancels guard detection.
-				}
-				this->pass( std::move( in ) );
-			} else { // Accumulate tokens of a complete directive, then execute.
-				if ( in.s[ 0 ] == '\n' ) {
-					directive = false;
-					std::string newline( std::move( in.s ) ); // Defer trailing space, for #include.
-					string( std::move( in.s ) ); // Remove it from pool (don't clog stream).
-					
-					handle_directive();
-					
-					in.s = newline.c_str();
-					(*this)( std::move( in ) ); // Retry the newline token.
-				} else {
-					input.push_back( std::move( in ) );
-					this->template diagnose< diagnose_policy::pass, error >( input.back() == pp_constants::variadic && input[ 1 ] != pp_constants::define_directive,
-						in, "The identifier __VA_ARGS__ is reserved (§16.3/5)." );
-				}
-			}
-			return;
-		
-		case skip_if: // Skip_if includes skipping elif *before* taken group.
-		case skip_else: // Skip_else includes skipping elif *after* taken group.
-			if ( ! directive ) return;
-			if ( in.s[0] != '\n' ) {
-				input.push_back( std::move( in ) ); // Collect tokens from after # until before newline.
-				return;
-			}
-			directive = false;
+	void operator () ( delimiter< struct directive, delimiter_sense::close > in ) {
+		directive = false;
+		if ( state == normal ) {
+			handle_directive();
+		} else {
+			CPLUS_FINALLY ( input.resize( 1 ); ) // Don't let exceptions leave garbage in the buffer.
 			
-			auto directive_it = input.begin() + 1;
-			if ( pp_constants::skip_space( directive_it, input.end() ) == input.end() ) return;
-			token const &directive = * directive_it;
+			token const &directive = directive_id();
 			if ( directive == pp_constants::if_directive || directive == pp_constants::ifdef_directive
 				|| directive == pp_constants::ifndef_directive ) {
 				++ skip_depth;
@@ -606,7 +566,8 @@ public:
 					state = entering;
 					
 					auto pen = input.begin() + 2;
-					this->template diagnose< diagnose_policy::pass, error >( skip_space( pen, input.end() ) != input.end(), // Standard is unclear on this requirement.
+					pp_constants::skip_space( pen, input.end() );
+					this->template diagnose< diagnose_policy::pass, error >( pp_constants::skip_space( ++ pen, input.end() ) != input.end(), // Standard is unclear on this requirement.
 						util::make_implicit_thunk( [&]{ return * pen; } ), "This directive takes no arguments." );
 				} else if ( directive == pp_constants::elif_directive && state == skip_if ) {
 					handle_directive();
@@ -614,8 +575,42 @@ public:
 			} else if ( directive == pp_constants::endif_directive ) {
 				-- skip_depth;
 			}
-			input.resize( 1 );
-			return;
+		}
+		this->template pass< pass_policy::optional >( std::move( in ) );
+	}
+	
+	void operator () ( token && in ) {
+		switch ( state ) {
+		case entering: // one-shot state simply inserts whitespace #line directive if preserving space
+			if ( this->token_config.preserve_space && in.get_parent< input_source >() ) {
+				using namespace pp_constants;
+				tokens comment_directive{ line_marker, { line_macro.type, line_macro.s, in }, space, file_macro, in.s[0] != '\n'? newline : placemarker };
+				for ( auto &t : process_macros( comment_directive.begin(), comment_directive.end() ) ) {
+					t.type = token_type::ws;
+					this->pass( std::move( t ) );
+				}
+			}
+			state = normal;
+		
+		case normal:
+			this->template diagnose< diagnose_policy::pass, error >( in == pp_constants::variadic && ( ! directive || directive_id() != pp_constants::define_directive ),
+				in, "The identifier __VA_ARGS__ is reserved (§16.3/5)." );
+			
+			if ( ! directive ) {
+				if ( guard_detect.depth == conditional_depth && in.type != token_type::ws ) {
+					guard_detect.valid = false; // Anything besides a directive outside guard cancels guard detection.
+				}
+				this->pass( std::move( in ) );
+			} else { // Accumulate tokens of a complete directive, then execute.
+				input.push_back( std::move( in ) );
+			}
+			break;
+		
+		case skip_if: // Skip_if includes skipping elif *before* taken group.
+		case skip_else: // Skip_else includes skipping elif *after* taken group.
+			if ( ! directive ) break;
+			input.push_back( std::move( in ) ); // Collect tokens from after # until before newline.
+			break;
 		}
 	}
 	
