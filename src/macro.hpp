@@ -452,7 +452,7 @@ public:
 		}
 	}
 	
-	name_map::iterator insert_macro_definition( tokens input, string_pool &macro_pool ) {
+	name_map::iterator insert_macro_definition( tokens && input, string_pool &macro_pool ) {
 		using namespace pp_constants;
 		
 		tokens::iterator pen = input.begin(); // skip leading space in input buffer and directive "define"
