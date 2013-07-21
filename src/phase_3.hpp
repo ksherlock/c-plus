@@ -151,27 +151,20 @@ class phase3 : public stage< output_iterator, phase3_config >,
 					phase3::stage::template pass< pass_policy::optional >( delimiter< struct directive, delimiter_sense::close >( in ) );
 					in_directive = false;
 				}
-				if ( token.s.empty() || ! this->get_config().preserve_space ) {
-					token.assign_content( pp_constants::newline ); // Newline has precedence over space in non-preserving mode.
-					token.construct::operator = ( in );
-					if ( this->get_config().preserve_space ) token = token.reallocate( this->get_config().stream_pool ); // Re-open to append.
-				} else token.s += '\n';
+				if ( token.s.empty() ) token.construct::operator = ( in );
+				if ( ! this->get_config().preserve_space ) token.assign_content( pp_constants::newline ); // Newline has precedence over space in non-preserving mode.
 				state = after_newline;
-				state_after_space = ws; // cancel looking for directive or header name
-				return;
-			} else
-		case after_newline: // fallthrough - only insert one token break before first newline
+				state_after_space = ws; // Cancel looking for directive or header name.
+			} else if ( char_in_set( char_set::space, c ) && token.s.empty() ) {
+				token.construct::operator = ( in );
+				if ( ! this->get_config().preserve_space ) token.assign_content( pp_constants::space );
+				state = space_run;
+			}
+		case after_newline:
 			if ( char_in_set( char_set::space, c ) ) {
-				if ( token.s.empty() ) {
-					token.construct::operator = ( in );
-					token.type = ws; // In case token.type = state_after_space assigned after_newline.
-					state = space_run;
-				}
 				if ( this->get_config().preserve_space ) {
 					assert ( token.s.get_allocator() == this->get_config().stream_pool );
 					unshift( in );
-				} else if ( token.s.empty() ) {
-					token.s = pp_constants::space.s;
 				}
 				this->template diagnose< diagnose_policy::pass, error >( in_directive && c == '\v',
 					token, "Only space and horizontal tab allowed in whitespace outside comments in a directive (§16/4)." );
@@ -180,7 +173,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 			} else {
 				if ( ! token.s.empty() ) { // Filter empty whitespace tokens, but always advance state to state_after_space.
 					if ( state == after_newline ) state_after_space = after_newline; // Newline cancels state_after_space, i.e. directive and header name detection.
-					token.type = ws;
+					token.type = ws; // In case token.type = state_after_space assigned after_newline.
 					pass();
 				} else state = state_after_space;
 				
