@@ -144,18 +144,18 @@ class phase3 : public stage< output_iterator, phase3_config >,
 			}
 		case space_run:
 			if ( c == '\n' || c == '\r' ) { // quietly allow CR on the assumption it precedes LF.
-				if ( this->get_config().preserve_space && ! token.s.empty() ) {
-					pass();
-				}
 				if ( in_directive ) {
+					if ( this->get_config().preserve_space && ! token.s.empty() ) {
+						pass(); // Directive includes space up to newline.
+					}
 					phase3::stage::template pass< pass_policy::optional >( delimiter< struct directive, delimiter_sense::close >( in ) );
 					in_directive = false;
 				}
-				if ( token.s.empty() ) {
+				if ( token.s.empty() || ! this->get_config().preserve_space ) {
+					token.assign_content( pp_constants::newline ); // Newline has precedence over space in non-preserving mode.
 					token.construct::operator = ( in );
-				}
-				token.assign_content( pp_constants::newline );
-				if ( this->get_config().preserve_space ) token = token.reallocate( this->get_config().stream_pool ); // re-open to append
+					if ( this->get_config().preserve_space ) token = token.reallocate( this->get_config().stream_pool ); // Re-open to append.
+				} else token.s += '\n';
 				state = after_newline;
 				state_after_space = ws; // cancel looking for directive or header name
 				return;
