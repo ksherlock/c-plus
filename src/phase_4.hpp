@@ -389,18 +389,16 @@ class phase4
 			auto end = input.rbegin();
 			skip_space( end, decltype( end )( pen ) ); // skip trailing space
 			auto name_begin = pen;
-			while ( pen != end.base() ) {
-				if ( pen->type == token_type::ws ) name += ' ';
-				else name += pen ++ ->s;
+			for ( ; pen != end.base(); ++ pen ) {
+				if ( pen->type != token_type::ws ) name += pen->s;
+				else if ( token_semantic_equal( * pen, pp_constants::space ) ) name += ' ';
 			}
-			if ( name.back() == ' ' ) {
+			while ( name.back() == ' ' ) {
 				name.pop_back();
-				-- pen;
 			}
-			-- pen;
+			pen = name_begin + 1;
 			this->template diagnose< diagnose_policy::fatal, error >( name.front() != '<' || name.back() != '>' || name.size() == 2, * pen,
 				"Expected a sequence of tokens between \"<\" and \">\"." );
-			pen = name_begin + 1;
 		}
 		
 		bool use_user_paths = name.front() == '"';
