@@ -14,7 +14,6 @@ namespace cplus {
 
 namespace pp_constants {
 	token const stringize_macro{ token_type::id, "#" }; // Use illegal identifier for internal #pragma support macro.
-	token const line_marker = { token_type::ws, "#line " };
 	tokens const guard_default{ zero }; // An empty header file is unconditionally guarded.
 }
 
@@ -570,7 +569,7 @@ public:
 		case entering: // one-shot state simply inserts whitespace #line directive if preserving space
 			if ( this->token_config.preserve_space && in.get_parent< input_source >() ) {
 				using namespace pp_constants;
-				tokens comment_directive{ line_marker, { line_macro.type, line_macro.s, in }, space, file_macro, in.s[0] != '\n'? newline : placemarker };
+				tokens comment_directive{ { token_type::ws, "#line " }, { line_macro.type, line_macro.s, in }, space, file_macro, in.s[0] != '\n'? newline : placemarker };
 				for ( auto &t : process_macros( comment_directive.begin(), comment_directive.end() ) ) {
 					t.type = token_type::ws;
 					this->pass( std::move( t ) );
@@ -700,7 +699,7 @@ class space_condenser : public stage< output, phase4_config, phase3_config > {
 public:
 	using space_condenser::stage::stage;
 	
-	void operator() ( token && in ) {
+	void operator () ( token && in ) {
 		if ( ! this->template get_config< phase3_config const >().preserve_space ) return this->pass( std::move( in ) );
 		
 		if ( in.type != token_type::ws ) {

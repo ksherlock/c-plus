@@ -39,9 +39,8 @@ string repool( string s, string_pool p ) { return { s.c_str(), p }; }
 
 namespace cplus {
 
-struct passed_exception : std::runtime_error { passed_exception() : std::runtime_error( "ICE: Failed to stop exception propagation after normal handling." ) {} };
+struct passed_exception : std::logic_error { passed_exception() : std::logic_error( "ICE: Failed to stop exception propagation after normal handling." ) {} };
 
-// pass() puts input into a stage (functor or iterator) or its succeeding stages, catches thrown exceptions and feeds them back in.
 enum class pass_policy { mandatory, optional, enable_if };
 enum class diagnose_policy { none, pass, fatal }; // Apply to either sender or receiver. Sender cannot specify none.
 

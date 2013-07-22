@@ -106,7 +106,6 @@ struct amalgam : t ... {
 	amalgam( t && ... in ) : t( std::move( in ) ) ... {} // not perfect forwarding
 protected:
 	void operator () ( struct amalgam_tag ) = delete;
-	void operator () ( struct amalgam_tag * ) = delete; // GCC workaround: invalidate expression &fn::operator()
 };
 
 template< typename ftor >

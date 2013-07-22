@@ -24,7 +24,7 @@ struct macro_context_info { // information that determines how macros are expand
 		std::int32_t line_displacement; // controlled by #line directive
 	} presumed;
 	
-	mutable std::vector< token /*const - GCC workaround */ > callers;
+	mutable std::vector< token > callers;
 };
 
 template< typename output_iterator > // either another macro_context (via std::function) or a macro_filter
