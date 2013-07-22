@@ -692,6 +692,29 @@ public:
 		{ this->template diagnose< diagnose_policy::pass, error >( state != normal, pragma_token, "Unterminated _Pragma." ); }
 };
 
+template< typename output >
+class space_condenser : public stage< output, phase4_config, phase3_config > {
+	token acc = empty_acc();
+	token empty_acc() { return { token_type::ws, string{ this->template get_config< phase4_config const >().macro_pool } }; }
+public:
+	using space_condenser::stage::stage;
+	
+	void operator() ( token && in ) {
+		if ( ! this->template get_config< phase3_config const >().preserve_space ) return this->pass( std::move( in ) );
+		
+		if ( in.type != token_type::ws ) {
+			if ( ! acc.s.empty() ) {
+				this->pass( std::move( acc ) );
+				acc = empty_acc();
+			}
+			this->pass( std::move( in ) );
+		} else {
+			if ( acc.s.empty() ) acc.construct::operator = ( std::move( in ) );
+			acc.s += std::move( in.s );
+		}
+	}
+};
+
 }
 
 #endif

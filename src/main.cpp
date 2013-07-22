@@ -73,7 +73,7 @@ void point_at( construct const &t ) {
 int main( int argc, char *argv[] ) {
 	std::setlocale( LC_ALL, "" );
 	
-	auto && common_pile = cplus::pile< cplus::phase4, cplus::pragma_filter > (
+	auto && common_pile = cplus::pile< cplus::phase4, cplus::space_condenser, cplus::pragma_filter > (
 		cplus::util::amalgamate(
 			[]( cplus::token &&token ){ std::fwrite( token.s.c_str(), 1, token.s.size(), stdout ); std::fwrite( "·", 1, std::strlen( "·" ), stdout ); },
 			[]( cplus::error && err ) {
