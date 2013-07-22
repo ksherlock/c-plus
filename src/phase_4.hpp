@@ -603,7 +603,7 @@ public:
 	void flush() {
 		this->template diagnose< diagnose_policy::pass, error >( state == skip_if || state == skip_else || conditional_depth != 0,
 			input.empty()? construct() : input.back(), "Expected #endif." );
-		if ( state == directive ) { // If there is no terminating newline, it isn't a directive. Reprocess the tokens as garbage.
+		if ( directive ) { // If there is no terminating newline, it isn't a directive. Reprocess the tokens as garbage.
 			tokens redo;
 			redo.swap( input );
 			this->pass( std::make_move_iterator( redo.begin() ), std::make_move_iterator( redo.end() ) );
