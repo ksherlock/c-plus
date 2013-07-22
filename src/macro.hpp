@@ -45,10 +45,8 @@ public:
 	
 	void flush() {
 		replace_object_completely();
-		if ( ! this->template diagnose< diagnose_policy::pass, error >( paren_depth != 0,
-			util::make_implicit_thunk( [&]{ return input[ input.front().type == token_type::ws ]; } ), "Unterminated macro invokation." ) ) {
-			this->template diagnose< diagnose_policy::pass, error >( input.size() > 3 /* space, name, space */, input.back(), "ICE: too much input at flush." );
-		}
+		this->template diagnose< diagnose_policy::pass, error >( paren_depth != 0,
+			input.front(), "Unterminated macro invocation." );
 		this->pass( std::make_move_iterator( input.begin() ), std::make_move_iterator( input.end() ) );
 		input.clear();
 		definition = nullptr;
@@ -76,20 +74,15 @@ public:
 				}
 			} // Now, if definition is set, it's a function-like macro still awaiting "(".
 			
-			if ( in.type == token_type::ws ) goto condense_space;
+			if ( definition && in.type == token_type::ws ) input.push_back( std::move( in ) ); // Save space between name and "(".
 			else {
+				flush(); // Clear any uncalled function, or just flush whitespace. No object macro here.
 				name_map::const_iterator def;
 				if ( in.type == token_type::id && ( def = common.macros.find( in.s ) ) != common.macros.end() ) {
-					if ( definition ) { // Flush uncalled function-like macro. Save trailing space.
-						tokens::iterator flush_end = input.end() - ( input.back().type == token_type::ws );
-						this->pass( std::make_move_iterator( input.begin() ), std::make_move_iterator( flush_end ) );
-						input.erase( input.begin(), flush_end );
-					}
 					definition = &* def;
 					input.push_back( std::move( in ) ); // Remember name in case macro isn't called.
 				} else {
-					flush(); // Clear any uncalled function, or just flush whitespace. No object macro here.
-					this->pass( std::move( in ) ); // Common case: not in any part of an invokation, pass through.
+					this->pass( std::move( in ) ); // Common case: not in any part of an invocation, pass through.
 				}
 			}
 		} else {
@@ -100,18 +93,9 @@ public:
 			} else if ( in == pp_constants::rparen ) {
 				input.push_back( std::move( in ) );
 				-- paren_depth;
-				if ( paren_depth == 0 ) replace();
-			} else if ( in == pp_constants::recursion_stop && input.back() == pp_constants::recursion_stop ) {
-				// trim consecutive recursion stops
-			} else
-		condense_space:
-			if ( in.type != token_type::ws || input.empty() || input.back().type != token_type::ws ) {
-				input.push_back( std::move( in ) );
-			} else if ( common.token_config.preserve_space ) {
-				#if ! CPLUS_USE_STD_STRING
-				input.back().s.open();
-				#endif
-				input.back().s += in.s.c_str();
+				if ( paren_depth == 0 ) replace(); // Execute function-like macro.
+			} else if ( ! ( in == pp_constants::recursion_stop && input.back() == pp_constants::recursion_stop ) ) {
+				input.push_back( std::move( in ) ); // Trim consecutive recursion stops, but otherwise simply accumulate arguments.
 			}
 		}
 		if ( stop_recursion ) {
@@ -132,10 +116,6 @@ protected:
 	}
 
 private:
-	template< typename i > // either tokens::iterator or tokens::const_iterator
-	static typename std::iterator_traits< i >::pointer skip_space( i &it )
-		{ return it->type == token_type::ws? &* it ++ : nullptr; }
-	
 	static bool is_function_like( name_map::const_reference definition )
 		{ return definition.second[0].type != token_type::ws; }
 	
@@ -146,23 +126,25 @@ private:
 		struct arg_info {
 			tokens::const_iterator begin, end;
 			
-			void trim_begin() // erase whitespace at start
-				{ macro_context::skip_space( begin ); }
-			void trim_end() // erase whitespace at end
-				{ if ( end != begin && end[ -1 ].type == token_type::ws ) -- end; }
+			void trim_begin() // Erase whitespace at start.
+				{ pp_constants::skip_space( begin, end ); }
+			void trim_end() { // Erase whitespace at end.
+				tokens::const_reverse_iterator rb( begin ), re( end );
+				pp_constants::skip_space( re, rb );
+				end = re.base();
+			}
 		};
 		
 		bool function_like = is_function_like( * definition );
 		std::vector< arg_info > args_info; // size = param count
 		tokens::iterator input_pen = input.begin();
-		bool invocation_leading_space = skip_space( input_pen );
 		common.callers.push_back( std::move( * input_pen ) ); // Register in call stack before rescanning.
 		CPLUS_FINALLY( common.callers.pop_back(); )
-		if ( function_like ) skip_space( ++ input_pen ); // ignore space between name and paren
+		if ( function_like ) pp_constants::skip_space( ++ input_pen, input.end() ); // ignore space between name and paren
 		
 		// save macro name and arguments, or special replacement list, in persistent instantiation object
 		auto inst = definition->first == pp_constants::line_macro.s || definition->first == pp_constants::file_macro.s?
-			std::make_shared< macro_replacement >( common.callers.front(), tokens{ pp_constants::space,
+			std::make_shared< macro_replacement >( common.callers.front(), tokens{ pp_constants::placemarker,
 				definition->first == pp_constants::line_macro.s? // line number has no location as it is generated ex nihilo
 				token{ token_type::num, string{ std::to_string( line_number( common.callers.front() ) ).c_str(), common.token_config.stream_pool } }
 				: common.presumed.filename, pp_constants::placemarker
@@ -170,7 +152,6 @@ private:
 		: std::make_shared< macro_replacement >( common.callers.front(), definition->second,
 			tokens{ std::move_iterator< tokens::iterator >{ input_pen }, std::move_iterator< tokens::iterator >{ input.end() } } );
 		
-		input.erase( input.begin() + invocation_leading_space, input.end() ); // All input has been moved from except space acc.
 		definition = nullptr; // Clear the "registers" to avoid confusing rescanning.
 		tokens const &def = inst->replacement;
 		
@@ -195,7 +176,7 @@ private:
 			}
 			if ( arg_pen != inst->args.end() - 1 ) {
 				if ( args_info.size() == 0 ) {
-					skip_space( ++ arg_pen );
+					pp_constants::skip_space( ++ arg_pen, inst->args.end() - 1 );
 					this->template diagnose< diagnose_policy::pass, error >( arg_pen != inst->args.end() - 1, * arg_pen, "Macro does not accept any argument." );
 				} else if ( ! this->template diagnose< diagnose_policy::pass, error >( // If there isn't an error due to not being a variadic macro, handle variadic list.
 					def[ args_info.size() - 1 ] != pp_constants::variadic, * arg_pen, "Too many arguments to macro." ) ) {
@@ -452,7 +433,7 @@ public:
 		}
 	}
 	
-	name_map::iterator insert_macro_definition( tokens && input, string_pool &macro_pool ) {
+	name_map::iterator insert_macro_definition( tokens input, string_pool &macro_pool ) {
 		using namespace pp_constants;
 		
 		tokens::iterator pen = input.begin(); // skip leading space in input buffer and directive "define"

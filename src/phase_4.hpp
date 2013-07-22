@@ -165,14 +165,12 @@ class phase4
 	void handle_directive() {
 		using pp_constants::skip_space;
 		
-		tokens::iterator pen = input.begin() + 2; // Skip space accumulator and #.
-		skip_space( pen, input.end() ); // Skip succeeding space; it won't be accumulated.
-		input[ 1 ].assign_content( pp_constants::placemarker ); // Clear the redundant # token.
+		input.front().assign_content( pp_constants::placemarker ); // Clear the redundant # token.
+		tokens::iterator pen = input.begin() + 1;
+		skip_space( pen, input.end() );
 		
-		bool is_include = false; // handle_header does its own input.resize( 1 ) before entering the header.
-		CPLUS_FINALLY(
-			if ( ! is_include ) input.resize( 1 ); // Preceding whitespace continues accumulation.
-		)
+		bool is_include = false; // handle_header does its own input.clear() before entering the header.
+		CPLUS_FINALLY ( if ( ! is_include ) input.clear(); )
 		
 		if ( pen != input.end() && ( ( conditional_depth == guard_detect.depth // at file top level,
 				&& * pen != pp_constants::ifndef_directive && * pen != pp_constants::if_directive ) // any wrong directive
@@ -206,10 +204,6 @@ class phase4
 		else if ( * pen == pp_constants::pragma_directive ) { // convert #pragma to _Pragma()
 			tokens arg;
 			arg.swap( input );
-			CPLUS_FINALLY(
-				input.clear();
-				input.push_back( std::move( arg.front() ) );
-			)
 			
 			tokens intro = { pp_constants::pragma_operator, pp_constants::lparen, pp_constants::stringize_macro, pp_constants::lparen };
 			this->pass( std::make_move_iterator( intro.begin() ), std::make_move_iterator( intro.end() ) );
@@ -221,8 +215,7 @@ class phase4
 				this->pass( util::val( pp_constants::rparen ) ); // Close the stringize macro (and whatever the user left unbalanced).
 			}
 			this->pass( util::val( pp_constants::rparen ) ); // Terminate the _Pragma operator which is not a macro.
-			CPLUS_DO_FINALLY // Keep accumulating whitespace.
-		
+			
 		} else if ( * pen == pp_constants::else_directive || * pen == pp_constants::endif_directive
 					|| ( * pen == pp_constants::elif_directive && state != skip_if ) ) {
 			this->template diagnose< diagnose_policy::fatal, error >( conditional_depth == 0, * pen, "This directive must terminate a conditional block." );
@@ -279,10 +272,8 @@ class phase4
 			
 		} else if ( * pen == pp_constants::include_directive || * pen == pp_constants::line_directive ) {
 			// Handle directives allowing macros in arguments. This cannot be the default (§16/6).
-			std::iter_swap( input.begin(), pen - 1 ); // drop whitespace after the # token
-			input = process_macros( pen - 1, input.end() );
-			if ( input.front().type != token_type::ws ) input.insert( input.begin(), pp_constants::placemarker );
-			pen = input.begin() + 1;
+			input = process_macros( pen, input.end() );
+			pen = input.begin();
 			
 			if ( * pen == pp_constants::include_directive ) {
 				is_include = true;
@@ -292,7 +283,7 @@ class phase4
 				std::ptrdiff_t physical_line = this->line_number( * pen ); // signed to prevent overflow below
 				
 				this->template diagnose< diagnose_policy::fatal, error >( skip_space( ++ pen, input.end() ) == input.end(),
-					input.front(), "Expected line number." );
+					input.back(), "Expected line number." );
 				
 				std::istringstream s( pen->s ); // decimal-only is default
 				std::int32_t line_number = 0;
@@ -318,7 +309,7 @@ class phase4
 			this->template diagnose< diagnose_policy::pass, error >( true, * pen, "Non-directive." );
 		}
 		
-		CPLUS_DO_FINALLY // Trim input buffer to whitespace accumulator.
+		CPLUS_DO_FINALLY // Clear input buffer.
 	}
 	
 	bool evaluate_condition( tokens::const_iterator first, tokens::const_iterator last ) {
@@ -371,13 +362,11 @@ class phase4
 	
 	struct header_access { token source; std::string path; token presumed; };
 	header_access header_access_from_input( tokens::iterator pen ) {
-		CPLUS_FINALLY (
-			input.resize( 1 );
-		)
+		CPLUS_FINALLY ( input.clear(); )
 		using pp_constants::skip_space;
 		
 		this->template diagnose< diagnose_policy::fatal, error >( skip_space( ++ pen, input.end() ) == input.end(),
-			input.front(), "Expected header name." );
+			input.back(), "Expected header name." );
 		
 		std::string name;
 		if ( pen->type == token_type::header_name ) name = pen->s;
@@ -451,7 +440,7 @@ class phase4
 		this->template diagnose< diagnose_policy::pass, error >( ( pen->type == token_type::string_lit || pen->type == token_type::header_name )
 			&& skip_space( ++ pen, input.end() ) != input.end(), input.back(), "Extra tokens after header name." );
 		
-		CPLUS_DO_FINALLY // Trim input buffer to whitespace accumulator.
+		CPLUS_DO_FINALLY // Clear input buffer.
 		return ret;
 	}
 	
@@ -528,7 +517,7 @@ public:
 	}
 	
 	token const & directive_id() {
-		auto directive_it = input.begin() + 2; // First character is space and next character is #.
+		auto directive_it = input.begin() + 1; // First character is #.
 		return pp_constants::skip_space( directive_it, input.end() ) != input.end()? * directive_it : pp_constants::placemarker;
 	}
 	
@@ -536,8 +525,7 @@ public:
 		this->template diagnose< diagnose_policy::pass, error >( this->paren_depth != 0, in, "A macro invocation cannot span a directive (§16.3/11)." );
 		
 		if ( input.empty() ) input.push_back( pp_constants::placemarker ); // Ensure there is whitespace before the directive.
-		this->pass( std::make_move_iterator( input.begin() ), std::make_move_iterator( input.end() - 1 ) ); // Flush uncalled function.
-		input.erase( input.begin(), input.end() - 1 ); // Save trailing space token.
+		this->phase4::macro_context::flush(); // Flush uncalled function.
 		directive = true;
 		this->template pass< pass_policy::optional >( std::move( in ) );
 	}
@@ -546,7 +534,7 @@ public:
 		if ( state == normal ) {
 			handle_directive();
 		} else {
-			CPLUS_FINALLY ( input.resize( 1 ); ) // Don't let exceptions leave garbage in the buffer.
+			CPLUS_FINALLY ( input.clear(); ) // Don't let exceptions leave garbage in the buffer.
 			
 			token const &directive = directive_id();
 			if ( directive == pp_constants::if_directive || directive == pp_constants::ifdef_directive
@@ -563,7 +551,7 @@ public:
 					
 					state = entering;
 					
-					auto pen = input.begin() + 2;
+					auto pen = input.begin() + 1;
 					pp_constants::skip_space( pen, input.end() );
 					this->template diagnose< diagnose_policy::pass, error >( pp_constants::skip_space( ++ pen, input.end() ) != input.end(), // Standard is unclear on this requirement.
 						util::make_implicit_thunk( [&]{ return * pen; } ), "This directive takes no arguments." );
