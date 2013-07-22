@@ -681,10 +681,11 @@ public:
 								return;
 							}
 						}
-		case close_paren:	state = normal;
-							pragma_token = token();
-							this->template diagnose< diagnose_policy::pass, error >( in != pp_constants::rparen,
-								in, "Only one argument to _Pragma allowed (§16.9)." );
+		case close_paren:	pragma_token = token();
+							if ( ! this->template diagnose< diagnose_policy::pass, error >( in != pp_constants::rparen,
+								in, "Only one argument to _Pragma allowed (§16.9)." ) ) {
+								state = normal; // Continue complaining until the close paren.
+							}
 							return;
 		}
 	}
