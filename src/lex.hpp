@@ -470,7 +470,8 @@ class lexer : public stage< output_iterator, lexer_config >,
 		
 			/*	A header-name ceases to be a header-name if it's followed by another token. So we must scan to the end of line.
 				But the usual whitespace handling would pass the whitespace before the state machine could return to header_name.
-				Shift the header-name characters, then scan whitespace into token until \n. If anything goes wrong, retokenize. */
+				Shift the header-name characters, then scan whitespace into token until \n. If anything goes wrong, retokenize.
+				Good: rescanned characters have proper locations. Bad: whitespace after an invalidated name is lost. */
 		case header_name:
 			if ( token.type == header_name ) {
 				if ( c == '\n' ) return header_name_retry( in );
@@ -554,19 +555,13 @@ class lexer : public stage< output_iterator, lexer_config >,
 	}
 	
 	void header_name_retry( pp_char const & in ) {
-		token.type = state = state_after_space = ws;
-		auto trailing_ws = std::move( token ); // Save any trailing space.
-		token.s.clear();
+		state = state_after_space = ws;
+		token = {};
 		
 		std::vector< pp_char > input_back;
 		swap( input_back, input_buffer );
 		for ( auto && p : input_back ) (*this)( p );
-		
-		if ( ! trailing_ws.s.empty() ) { // Restore saved space into a single token; locations of individual comments are lost.
-			(*this)( { { ' ', std::move( trailing_ws ) }, pp_char_source::normal } );
-			if ( this->get_config().preserve_space ) token = std::move( trailing_ws );
-		}
-		(*this)( in );
+		(*this)( in ); // Do not pass space previously stored in token.s inside a UTF-8 sequence.
 	}
 	
 	lex_decode_state decode_state() {
