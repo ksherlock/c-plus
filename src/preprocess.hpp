@@ -702,15 +702,18 @@ public:
 		if ( ! this->template get_config< lexer_config const >().preserve_space ) return this->pass( std::move( in ) );
 		
 		if ( in.type != token_type::ws ) {
-			if ( ! acc.s.empty() ) {
-				this->pass( std::move( acc ) );
-				acc = empty_acc();
-			}
+			flush();
 			this->pass( std::move( in ) );
 		} else {
 			if ( acc.s.empty() ) acc.construct::operator = ( std::move( in ) );
 			acc.s += std::move( in.s );
 		}
+	}
+	
+	void flush() {
+		if ( acc.s.empty() ) return;
+		this->pass( std::move( acc ) );
+		acc = empty_acc();
 	}
 };
 
