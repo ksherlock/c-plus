@@ -162,7 +162,7 @@ class lexer : public stage< output_iterator, lexer_config >,
 					unshift( in );
 				}
 				this->template diagnose< diagnose_policy::pass, error >( in_directive && ( c == '\v' || c == '\f' ),
-					token, "Only space and horizontal tab allowed in whitespace outside comments in a directive (§16/4)." );
+					in, "Only space and horizontal tab allowed in whitespace outside comments in a directive (§16/4)." );
 				return;
 			
 			} else {
@@ -397,10 +397,10 @@ class lexer : public stage< output_iterator, lexer_config >,
 				}
 				this->template diagnose< diagnose_policy::pass, error >(
 					char_in_set( char_set::space, c ) || c == ')' || c == '\\' || ! char_in_set( char_set::basic_source, c ),
-					token, "Raw string delimiter sequence must consist of alphanumeric characters and C-language punctuation except parens "
+					in, "Raw string delimiter sequence must consist of alphanumeric characters and C-language punctuation except parens "
 					"and backslash (§2.14.5)." );
 				this->template diagnose< diagnose_policy::pass, error >( token.s.size() - token.s.find( '"' ) == 18,
-					token, "Raw string delimiter sequence may contain at most 16 characters (§2.14.5/2)." );
+					in, "Raw string delimiter sequence may contain at most 16 characters (§2.14.5/2)." );
 				return;
 			} else if ( c == ')' ) {
 				rstring_term_start = token.s.size(); // termination begins at next char
@@ -434,7 +434,7 @@ class lexer : public stage< output_iterator, lexer_config >,
 			case '\'':	if ( state == char_lit ) state = ud_suffix; return;
 			case '\\':	state = escape; return;
 			case '\n':
-				this->template diagnose< diagnose_policy::pass, error >( true, token, "Use \\n instead of embedding a newline in a literal (§2.14.5)." ); return;
+				this->template diagnose< diagnose_policy::pass, error >( true, in, "Use \\n instead of embedding a newline in a literal (§2.14.5)." ); return;
 			default:	return;
 			}
 		
@@ -456,7 +456,7 @@ class lexer : public stage< output_iterator, lexer_config >,
 				input_buffer.clear();
 			} else unshift( in );
 			state = static_cast< states >( token.type );
-			this->template diagnose< diagnose_policy::pass, error >( in_s == pp_char_source::ucn, token, "ICE: failed to inhibit UCN conversion." );
+			this->template diagnose< diagnose_policy::pass, error >( in_s == pp_char_source::ucn, in, "ICE: failed to inhibit UCN conversion." );
 			return;
 		
 		case ud_suffix: // This only checks the first char to see if a suffix exists.
@@ -512,7 +512,7 @@ class lexer : public stage< output_iterator, lexer_config >,
 				} else if ( char_in_set( char_set::space, c ) ) {
 					token.s += c;
 					this->template diagnose< diagnose_policy::pass, error >( c == '\v' || c == '\f',
-						token, "Only space and horizontal tab allowed in whitespace outside comments in a directive (§16/4)." );
+						in, "Only space and horizontal tab allowed in whitespace outside comments in a directive (§16/4)." );
 				
 				} else return header_name_retry( in );
 				return;
