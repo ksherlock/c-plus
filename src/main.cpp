@@ -4,9 +4,9 @@
 #include <iostream>
 #include <typeinfo>
 
-#include "phase_1_2.hpp"
-#include "phase_3.hpp"
-#include "phase_4.hpp"
+#include "char_decode.hpp"
+#include "lex.hpp"
+#include "preprocess.hpp"
 
 #include <fstream>
 #include <clocale>
@@ -73,7 +73,7 @@ void point_at( construct const &t ) {
 int main( int argc, char *argv[] ) {
 	std::setlocale( LC_ALL, "" );
 	
-	auto && common_pile = cplus::pile< cplus::phase4, cplus::space_condenser, cplus::pragma_filter > (
+	auto && common_pile = cplus::pile< cplus::preprocessor, cplus::space_condenser, cplus::pragma_filter > (
 		cplus::util::amalgamate(
 			[]( cplus::token &&token ){ std::fwrite( token.s.c_str(), 1, token.s.size(), stdout ); std::fwrite( "·", 1, std::strlen( "·" ), stdout ); },
 			[]( cplus::error && err ) {
@@ -84,7 +84,7 @@ int main( int argc, char *argv[] ) {
 		)
 	);
 	
-	auto && pile = cplus::pile< cplus::phase1_2, cplus::phase3 >( common_pile );
+	auto && pile = cplus::pile< cplus::char_decoder, cplus::lexer >( common_pile );
 
 	instantiate( std::make_shared< cplus::raw_text< std::string > >(
 		"#define __STDC__ 1\n"

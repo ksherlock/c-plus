@@ -4,7 +4,7 @@
 #include "util.h"
 #include "formats.h"
 #include "constants.h"
-#include "phase_3.hpp"
+#include "lex.hpp"
 
 #include <map>
 #include <unordered_map>
@@ -15,7 +15,7 @@ template< typename output_iterator >
 class substitution_phase;
 
 struct macro_context_info { // information that determines how macros are expanded, shared between contexts
-	phase3_config const &token_config;
+	lexer_config const &token_config;
 	
 	typedef std::unordered_map< string, tokens const > name_map;
 	name_map macros;
@@ -290,7 +290,7 @@ private:
 				
 				instantiate( std::make_shared< raw_text< string > >( s,
 					instantiate_component( std::make_shared< macro_substitution >( std::move( * pen ), arg.begin, arg.end ), 0 )
-				), pile< phase3 >( common.token_config, lex_acc.template pass_function< token &&, error && >() ) );
+				), pile< lexer >( common.token_config, lex_acc.template pass_function< token &&, error && >() ) );
 				pen += 2; // consume argument of #
 				
 				* acc_pen ++ = lex_acc.flush_output();
@@ -352,7 +352,7 @@ private:
 				}
 				
 				instantiate( std::make_shared< raw_text< string > >( ends[lhs][ -1 ].s + begins[rhs][ 0 ].s, ends[lhs][ -1 ] ), 
-					pile< phase3 >( common.token_config, lex_acc.template pass_function< token &&, error && >() ) );
+					pile< lexer >( common.token_config, lex_acc.template pass_function< token &&, error && >() ) );
 				* acc_pen ++ = lex_acc.flush_output();
 				
 				this->template diagnose< diagnose_policy::pass, error >( lex_acc.lex_error, begins[rhs][ 0 ], "Concatenate (##) failed." );
@@ -416,7 +416,7 @@ public:
 
 template< typename output_iterator >
 class substitution_phase
-	: public derived_stage< macro_context< macro_filter< output_iterator > >, phase3_config >,
+	: public derived_stage< macro_context< macro_filter< output_iterator > >, lexer_config >,
 	protected macro_context_info {
 public:
 	template< typename ... args >

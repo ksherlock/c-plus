@@ -1,8 +1,8 @@
 // Cplus project, translation phases 1 and 2: character-level transformations.
 // copyright David Krauss, created 8/26/11
 
-#ifndef CPLUS_PHASE_1_2
-#define CPLUS_PHASE_1_2
+#ifndef CPLUS_CHAR_DECODE
+#define CPLUS_CHAR_DECODE
 
 #include "formats.h"
 
@@ -12,10 +12,10 @@
 namespace cplus {
 
 template< typename output_iterator >
-class phase1_2 : public stage< output_iterator, phase1_2_config >,
+class char_decoder : public stage< output_iterator, char_decoder_config >,
 	pp_char_source_import_base {
 	
-	using phase1_2::stage::pass;
+	using char_decoder::stage::pass;
 	
 	enum states { tri1 = pp_char_source_last, backslash, msdos };
 	int state;
@@ -37,16 +37,16 @@ class phase1_2 : public stage< output_iterator, phase1_2_config >,
 		static_cast< void >( guard );
 	}
 	
-	phase3_decode_state get_decode_state() {
-		phase3_decode_state ret = {};
+	lex_decode_state get_decode_state() {
+		lex_decode_state ret = {};
 		this->template pass< pass_policy::optional >( ret );
 		return ret;
 	}
 	
 public:
 	template< typename ... args >
-	phase1_2( args && ... a )
-		: phase1_2::stage( std::forward< args >( a ) ... ),
+	char_decoder( args && ... a )
+		: char_decoder::stage( std::forward< args >( a ) ... ),
 		state{ normal }, shift_p{ shift_buffer } {}
 	
 	void flush()
@@ -57,9 +57,9 @@ public:
 		case normal:
 			switch ( c.c ) {
 			case '?':	if ( this->get_config().disable_trigraphs
-							|| get_decode_state() == phase3_decode_state::raw ) goto normal;
+							|| get_decode_state() == lex_decode_state::raw ) goto normal;
 						state = tri1;		shift( c );		return;
-			case '\\':	if ( get_decode_state() == phase3_decode_state::raw ) goto normal;
+			case '\\':	if ( get_decode_state() == lex_decode_state::raw ) goto normal;
 						state = backslash;	shift( c );		return;
 			default: normal:				pass( c );		return;
 			}
@@ -100,7 +100,7 @@ public:
 		case backslash:
 			switch ( c.c ) {
 			case 'u':
-			case 'U':	if ( get_decode_state() == phase3_decode_state::escape ) {
+			case 'U':	if ( get_decode_state() == lex_decode_state::escape ) {
 						state = normal;		unshift();		continue;
 						}
 						ucn_acc = 0;

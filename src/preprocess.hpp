@@ -1,8 +1,8 @@
 // Cplus project, translation phase 4: execute preprocessing directives and macros and the like.
 // copyright David Krauss, created 8/29/11
 
-#ifndef CPLUS_PHASE_4
-#define CPLUS_PHASE_4
+#ifndef CPLUS_PREPROCESS
+#define CPLUS_PREPROCESS
 
 #include "macro.hpp"
 
@@ -108,9 +108,9 @@ inline uintmax_t rudimentary_evaluate( tokens::iterator &pen, int min_precedence
 }
 
 template< typename output_iterator >
-class phase4
-	: public derived_stage< substitution_phase< output_iterator >, phase4_config, phase3_config > {
-	typedef typename phase4::derived_stage derived_stage;
+class preprocessor
+	: public derived_stage< substitution_phase< output_iterator >, preprocessor_config, lexer_config > {
+	typedef typename preprocessor::derived_stage derived_stage;
 	
 	using derived_stage::input; // share state with macro context subobject
 	using derived_stage::macros; // and macro substitution driver subobject
@@ -133,7 +133,7 @@ class phase4
 		tokens ret;
 		
 		// Make "defined" a macro which prevents expansion of its single argument. Imitate GCC's extension, manual §4.2.3.
-		typename phase4::macro_context_info::name_map::iterator preserver_it;
+		typename preprocessor::macro_context_info::name_map::iterator preserver_it;
 		preserve_defined_operator = preserve_defined_operator && ! macros.count( pp_constants::defined_operator.s ); // If user-defined macro already exists, use that instead, and don't undefine it.
 		if ( preserve_defined_operator ) { // #define defined(x)defined(x##<recursion stop><recursion stop>)
 			using namespace pp_constants; // Catenating first recursion stop ensures that no space precedes second.
@@ -464,7 +464,7 @@ class phase4
 		
 		state = entering;
 		instantiate( std::make_shared< inclusion >( std::move( access.path ), std::move( access.source ) ),
-			pile< phase1_2, phase3 >( * this ) );
+			pile< char_decoder, lexer >( * this ) );
 		
 		if ( guard_detect.valid && guard_detect.depth == conditional_depth ) {
 			guard_current_header();
@@ -477,10 +477,10 @@ class phase4
 	
 public:
 	template< typename ... args >
-	phase4( args && ... a ) : phase4( {}, std::forward< args >( a ) ... ) {}
+	preprocessor( args && ... a ) : preprocessor( {}, std::forward< args >( a ) ... ) {}
 	
 	template< typename ... args >
-	phase4( std::vector< tokens > init_macro_definitions /* Token sequences of directives with leading #'s stripped. */, args && ... a )
+	preprocessor( std::vector< tokens > init_macro_definitions /* Token sequences of directives with leading #'s stripped. */, args && ... a )
 		: derived_stage( ( init_macro_definitions.push_back( {
 			pp_constants::define_directive, pp_constants::stringize_macro, // #define #(...)#__VA_ARGS__
 				pp_constants::lparen, pp_constants::variadic_decl, pp_constants::rparen, pp_constants::stringize, pp_constants::variadic
@@ -500,7 +500,7 @@ public:
 			{ token_type::string_lit, ( std::string( "\"" ) + time_str.substr( 4, 11 ) + "\"" ).c_str() } }, literal_pool );
 		
 		struct pp_master_config : config_pragma_base {
-			phase4 *master;
+			preprocessor *master;
 			pragma_handler_list pragma_handlers() {
 				static pragma_handler_list ret = {
 					{ "once", pragma_function( [this]( tokens &&in ) {
@@ -524,7 +524,7 @@ public:
 		this->template diagnose< diagnose_policy::pass, error >( this->paren_depth != 0, in, "A macro invocation cannot span a directive (§16.3/11)." );
 		
 		if ( input.empty() ) input.push_back( pp_constants::placemarker ); // Ensure there is whitespace before the directive.
-		this->phase4::macro_context::flush(); // Flush uncalled function.
+		this->preprocessor::macro_context::flush(); // Flush uncalled function.
 		directive = true;
 		this->template pass< pass_policy::optional >( std::move( in ) );
 	}
@@ -659,7 +659,7 @@ public:
 							
 							tokens args;
 							instantiate( std::make_shared< raw_text< string > >( destringize( in.s ), in ),
-								pile< phase3 >( get_config< phase3_config >(),
+								pile< lexer >( get_config< lexer_config >(),
 									util::function< void( token && ), void( error && ) >(
 										[ & args ]( token && t ){ args.push_back( std::move( t ) ); },
 										this->template pass_function< error && >()
@@ -693,14 +693,14 @@ public:
 };
 
 template< typename output >
-class space_condenser : public stage< output, phase4_config, phase3_config > {
+class space_condenser : public stage< output, preprocessor_config, lexer_config > {
 	token acc = empty_acc();
-	token empty_acc() { return { token_type::ws, string{ this->template get_config< phase4_config const >().macro_pool } }; }
+	token empty_acc() { return { token_type::ws, string{ this->template get_config< preprocessor_config const >().macro_pool } }; }
 public:
 	using space_condenser::stage::stage;
 	
 	void operator () ( token && in ) {
-		if ( ! this->template get_config< phase3_config const >().preserve_space ) return this->pass( std::move( in ) );
+		if ( ! this->template get_config< lexer_config const >().preserve_space ) return this->pass( std::move( in ) );
 		
 		if ( in.type != token_type::ws ) {
 			if ( ! acc.s.empty() ) {

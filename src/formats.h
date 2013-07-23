@@ -62,7 +62,7 @@ struct pp_char : raw_char {
 struct line_splice : construct
 	{ explicit line_splice( construct in_c = {} ) : construct( std::move( in_c ) ) {} };
 
-struct phase1_2_config : config_pragma_base {
+struct char_decoder_config : config_pragma_base {
 	bool disable_trigraphs;
 	
 	pragma_handler_list pragma_handlers() {
@@ -91,9 +91,9 @@ bool token_semantic_equal( token const & l, token const & r ) {
 	return all_splices( l.s ) == all_splices( r.s );
 }
 
-enum class phase3_decode_state { normal, raw, escape };
+enum class lex_decode_state { normal, raw, escape };
 
-struct phase3_config : config_pragma_base {
+struct lexer_config : config_pragma_base {
 	mutable string_pool stream_pool;
 	
 	bool preserve_space;
@@ -107,7 +107,7 @@ struct phase3_config : config_pragma_base {
 		} } };
 		return ret;
 	}
-	phase3_config() : stream_pool( "stream" ), preserve_space( false ) {}
+	lexer_config() : stream_pool( "stream" ), preserve_space( false ) {}
 };
 
 struct macro_replacement : instantiation { // source of tokens from replacement list
@@ -136,7 +136,7 @@ struct macro_substitution : instantiation { // an argument used within a macro
 
 std::string destringize( std::string in );
 
-struct phase4_config : config_pragma_base {
+struct preprocessor_config : config_pragma_base {
 	mutable string_pool macro_pool; // holds replacement lists (and other persistent data)
 	std::vector< string > user_paths, system_paths; // header search set
 	
@@ -149,7 +149,7 @@ struct phase4_config : config_pragma_base {
 		};
 		return ret;
 	}
-	phase4_config() : macro_pool( "macro" ) {}
+	preprocessor_config() : macro_pool( "macro" ) {}
 };
 
 struct directive; // Undefined, but used for delimiter< directive >.

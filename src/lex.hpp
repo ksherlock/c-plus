@@ -1,8 +1,8 @@
 // Cplus project, translation phase 3: generate preprocessing tokens.
 // copyright David Krauss, created 8/26/11
 
-#ifndef CPLUS_PHASE_3
-#define CPLUS_PHASE_3
+#ifndef CPLUS_LEX
+#define CPLUS_LEX
 
 #include "util.h"
 #include "formats.h"
@@ -53,7 +53,7 @@ namespace char_set {
 }
 
 template< typename output_iterator >
-class phase3 : public stage< output_iterator, phase3_config >,
+class lexer : public stage< output_iterator, lexer_config >,
 	token_type_import_base {
 	
 	enum states {
@@ -90,7 +90,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 			token = {};
 			token.type = state = state_after_space;
 		} );
-		phase3::stage::pass( std::move( token ) );
+		lexer::stage::pass( std::move( token ) );
 		
 		static_cast< void >( guard );
 	}
@@ -148,7 +148,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 					if ( this->get_config().preserve_space && ! token.s.empty() ) {
 						pass(); // Directive includes space up to newline.
 					}
-					phase3::stage::template pass< pass_policy::optional >( delimiter< struct directive, delimiter_sense::close >( in ) );
+					lexer::stage::template pass< pass_policy::optional >( delimiter< struct directive, delimiter_sense::close >( in ) );
 					in_directive = false;
 				}
 				if ( token.s.empty() ) token.construct::operator = ( in );
@@ -352,7 +352,7 @@ class phase3 : public stage< output_iterator, phase3_config >,
 				if ( token.type == directive ) {
 					token.type = punct;
 					if ( punct_match == hash_alt || token == pp_constants::stringize ) {
-						phase3::stage::template pass< pass_policy::optional >( delimiter< struct directive, delimiter_sense::open >( token ) );
+						lexer::stage::template pass< pass_policy::optional >( delimiter< struct directive, delimiter_sense::open >( token ) );
 						pass();
 						state_after_space = directive;
 						in_directive = true;
@@ -573,8 +573,8 @@ class phase3 : public stage< output_iterator, phase3_config >,
 	
 public:
 	template< typename ... args >
-	phase3( args && ... a )
-		: phase3::stage( std::forward< args >( a ) ... ),
+	lexer( args && ... a )
+		: lexer::stage( std::forward< args >( a ) ... ),
 		state( initial ), state_after_space( after_newline ), in_directive( false ) {}
 	
 	void operator() ( raw_char const &in ) {
@@ -594,10 +594,10 @@ public:
 	void operator() ( pp_char const &in )
 		{ general_path( in, in.s ); }
 	
-	void operator() ( phase3_decode_state & s ) { // s must be initialized to "normal" or caller won't handle absence of this stage.
+	void operator() ( lex_decode_state & s ) { // s must be initialized to "normal" or caller won't handle absence of this stage.
 		switch ( state ) {
-			case rstring: s = phase3_decode_state::raw; break;
-			case escape: s = phase3_decode_state::escape; break;
+			case rstring: s = lex_decode_state::raw; break;
+			case escape: s = lex_decode_state::escape; break;
 		}
 	}
 	
