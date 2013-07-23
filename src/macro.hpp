@@ -400,16 +400,11 @@ private:
 	}
 };
 
-template< typename output_iterator >
-class macro_filter : public stage< output_iterator > {
-	friend typename macro_filter::stage;
+template< typename output >
+struct macro_filter : public stage< output > {
+	using macro_filter::stage::stage;
 	
-public:
-	template< typename ... args >
-	macro_filter( args && ... a )
-		: macro_filter::stage( std::forward< args >( a ) ... ) {}
-	
-	void operator() ( token &&in )
+	void operator () ( token && in )
 		{ if ( ! in.s.empty() ) this->pass( std::move( in ) ); } // Filter out placemarkers and recursion stops.
 };
 
