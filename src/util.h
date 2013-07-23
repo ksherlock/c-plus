@@ -1,17 +1,17 @@
 // Cplus project, general-purpose utilities.
 // copyright David Krauss, created 8/26/11
 
-#ifndef CPLUS_UTIL
-#define CPLUS_UTIL
+#ifndef CPLUS_UTIL_H
+#define CPLUS_UTIL_H
 
-#include <memory>
+#include <tuple>
 #include <utility>
-#include <iterator>
-#include <algorithm>
 #include <stdexcept>
 #include <functional>
 #include <type_traits>
-#include <cstring>
+#include <cassert>
+#include <cstdint>
+#include <cstddef>
 #include <ctime>
 
 // This kind of enumeration is scoped by default but unscoped for inheriting classes.

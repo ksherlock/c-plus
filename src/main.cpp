@@ -1,14 +1,14 @@
 // Cplus project, sample driver
 // copyright David Krauss, created 8/22/11
 
-#include <iostream>
-#include <typeinfo>
-
 #include "char_decode.hpp"
 #include "lex.hpp"
 #include "preprocess.hpp"
 
-#include <fstream>
+#include <iostream>
+#include <typeinfo>
+#include <iterator>
+
 #include <clocale>
 #include <cstdio> // for std::perror
 

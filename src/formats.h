@@ -1,10 +1,13 @@
 // Cplus project, data structures and constants interfacing the stages.
 // copyright David Krauss, created 8/26/11
 
-#ifndef CPLUS_FORMATS
-#define CPLUS_FORMATS
+#ifndef CPLUS_FORMATS_H
+#define CPLUS_FORMATS_H
 
-#include "framework.h"
+#include "stage.h"
+#include "construct.h"
+
+#include <initializer_list>
 
 #ifndef CPLUS_USE_STD_STRING
 #	include "string.h"

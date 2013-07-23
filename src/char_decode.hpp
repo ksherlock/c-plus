@@ -1,8 +1,8 @@
 // Cplus project, translation phases 1 and 2: character-level transformations.
 // copyright David Krauss, created 8/26/11
 
-#ifndef CPLUS_CHAR_DECODE
-#define CPLUS_CHAR_DECODE
+#ifndef CPLUS_CHAR_DECODE_H
+#define CPLUS_CHAR_DECODE_H
 
 #include "formats.h"
 

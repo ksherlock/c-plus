@@ -1,8 +1,8 @@
 // Cplus project, constant values describing the language (not the implementation in particular)
 // copyright David Krauss, created 8/26/11
  
-#ifndef CPLUS_CONSTANTS
-#define CPLUS_CONSTANTS
+#ifndef CPLUS_CONSTANTS_H
+#define CPLUS_CONSTANTS_H
 
 #include <type_traits>
 #include <algorithm>

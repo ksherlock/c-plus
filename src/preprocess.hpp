@@ -1,13 +1,12 @@
 // Cplus project, translation phase 4: execute preprocessing directives and macros and the like.
 // copyright David Krauss, created 8/29/11
 
-#ifndef CPLUS_PREPROCESS
-#define CPLUS_PREPROCESS
+#ifndef CPLUS_PREPROCESS_H
+#define CPLUS_PREPROCESS_H
 
 #include "macro.hpp"
 
 #include <sstream>
-#include <fstream>
 #include <stack>
 
 namespace cplus {

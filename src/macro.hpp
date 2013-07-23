@@ -1,12 +1,11 @@
 // Cplus project, preprocessor macro engine.
 // copyright David Krauss, created 9/2/11
 
-#include "util.h"
-#include "formats.h"
-#include "constants.h"
+#ifndef CPLUS_MACRO_H
+#define CPLUS_MACRO_H
+
 #include "lex.hpp"
 
-#include <map>
 #include <unordered_map>
 
 namespace cplus {
@@ -537,3 +536,5 @@ public:
 };
 
 }
+
+#endif

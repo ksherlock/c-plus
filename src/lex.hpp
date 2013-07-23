@@ -1,14 +1,12 @@
 // Cplus project, translation phase 3: generate preprocessing tokens.
 // copyright David Krauss, created 8/26/11
 
-#ifndef CPLUS_LEX
-#define CPLUS_LEX
+#ifndef CPLUS_LEX_H
+#define CPLUS_LEX_H
 
-#include "util.h"
 #include "formats.h"
 #include "constants.h"
 
-#include <algorithm>
 #include <sstream>
 
 namespace cplus {
