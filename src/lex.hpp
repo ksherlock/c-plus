@@ -24,19 +24,15 @@ namespace char_set {
 		0x00, 0x40, 0x00, 0x00,
 		0x80, 0x00, 0x00, 0x00,
 	};
-	constexpr char_bitmap space_not_vt = {
-		0x00, 0x64, 0x00, 0x00,
-		0x80, 0x00, 0x00, 0x00,
-	};
-	constexpr char_bitmap anything_not_newline = {
-		0xFF, 0xDF, 0xFF, 0xFF,
+	constexpr char_bitmap anything_on_line = {
+		0xFF, 0xC3, 0xFF, 0xFF, // Exclude newline, vertical tab, form feed, carriage return.
 		0xFF, 0xFF, 0xFF, 0xFF,
 		0xFF, 0xFF, 0xFF, 0xFF,
 		0xFF, 0xFF, 0xFF, 0xFF,
 	};
 	constexpr char_bitmap not_block_termination = {
 		0xFF, 0xFF, 0xFF, 0xFF,
-		0xFF, 0xDE, 0xFF, 0xFF,
+		0xFF, 0xDE, 0xFF, 0xFF, // Exclude asterisk and slash.
 		0xFF, 0xFF, 0xFF, 0xFF,
 		0xFF, 0xFF, 0xFF, 0xFF,
 	};
@@ -45,8 +41,8 @@ namespace char_set {
 		&none /* ws */, &ascii_alnum /* id */, &ascii_alnum_not_exponent /* num */, &none /* todo, multipunct for punct */,
 		&none, &none, &none, &none, /* string_lit, char_lit, header_name, misc */
 		&none, &none, &ascii_alnum, &none, &none, /* escape, exponent, directive, ud_suffix, rstring */
-		&line_space /* space_run */, &space_not_vt /* after_newline */,
-		&anything_not_newline /* line_comment */, &not_block_termination /* block_comment */, &none /* initial */
+		&line_space /* space_run */, &space /* after_newline */,
+		&anything_on_line /* line_comment */, &none /* line_comment_check */, &not_block_termination /* block_comment */, &none /* initial */
 	};
 }
 
@@ -55,7 +51,7 @@ class lexer : public stage< output_iterator, lexer_config >,
 	token_type_import_base {
 	
 	enum states {
-		escape = token_type_last, exponent, directive, ud_suffix, rstring, space_run, after_newline, line_comment, block_comment, initial
+		escape = token_type_last, exponent, directive, ud_suffix, rstring, space_run, after_newline, line_comment, line_comment_check, block_comment, initial
 	};
 	int state, state_after_space;
 	bool in_directive; // only serves to diagnose whitespace restriction of §16/4
@@ -96,6 +92,7 @@ class lexer : public stage< output_iterator, lexer_config >,
 	void general_path( raw_char const &in, pp_char_source in_s ) {
 		char32_t &c = utf8.result;
 		if ( state == block_comment || state == line_comment || ( state == header_name && ( token.type == block_comment || token.type == space_run ) ) ) {
+			// Disable UTF-8 decoding where possible, but avoid generating diagnostics on non-characters.
 			c = in.c;
 		} else {
 			bool undo_multibyte;
@@ -164,7 +161,7 @@ class lexer : public stage< output_iterator, lexer_config >,
 					assert ( token.s.get_allocator() == this->get_config().stream_pool );
 					unshift( in );
 				}
-				this->template diagnose< diagnose_policy::pass, error >( in_directive && c == '\v',
+				this->template diagnose< diagnose_policy::pass, error >( in_directive && ( c == '\v' || c == '\f' ),
 					token, "Only space and horizontal tab allowed in whitespace outside comments in a directive (§16/4)." );
 				return;
 			
@@ -377,16 +374,20 @@ class lexer : public stage< output_iterator, lexer_config >,
 			
 			if ( c == '*' && in_s != pp_char_source::ucn ) shift( in ); // advance to next sub-state
 			return;
-
+			
+		case line_comment_check:
+			this->template diagnose< diagnose_policy::pass, error >( char_in_set( char_set::space, c ) || in_s == pp_char_source::ucn,
+				in, "Only space allowed between vertical tab or form feed and line comment terminating newline (§2.8/1)." );
 		case line_comment:
 			if ( c == '\n' && in_s != pp_char_source::ucn ) {
 				token.type = state = ws;
 				continue;
 			} else {
 				if ( this->get_config().preserve_space ) token.s += c;
+				if ( ( c == '\v' || c == '\f' ) && in_s != pp_char_source::ucn ) state = line_comment_check;
 				return;
 			}
-		
+			
 		case rstring:
 			unshift( in );
 			if ( rstring_term_start == std::string::npos ) {
@@ -510,7 +511,7 @@ class lexer : public stage< output_iterator, lexer_config >,
 				
 				} else if ( char_in_set( char_set::space, c ) ) {
 					token.s += c;
-					this->template diagnose< diagnose_policy::pass, error >( c == '\v',
+					this->template diagnose< diagnose_policy::pass, error >( c == '\v' || c == '\f',
 						token, "Only space and horizontal tab allowed in whitespace outside comments in a directive (§16/4)." );
 				
 				} else return header_name_retry( in );

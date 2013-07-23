@@ -17,7 +17,7 @@ namespace char_set {
 typedef std::uint8_t char_bitmap[ 0x80 / 8 ];
 
 constexpr char_bitmap basic_source = {
-	0x00, 0x74, 0x00, 0x00,	// control chars, four are whitespace
+	0x00, 0x7C, 0x00, 0x00,	// control chars, five are whitespace
 	0xF7, 0xFF, 0xFF, 0xFF,	// punctuation except $; numbers
 	0x7F, 0xFF, 0xFF, 0xFF,	// skip @; uppercase letters
 	0x7F, 0xFF, 0xFF, 0xFE,	// skip ` and DEL; lowercase letters
@@ -25,7 +25,7 @@ constexpr char_bitmap basic_source = {
 
 // Reimplement some things from cctype, but improve uniformity at little effort.
 constexpr char_bitmap space = {
-	0x00, 0x74, 0x00, 0x00,
+	0x00, 0x7C, 0x00, 0x00,
 	0x80, 0x00, 0x00, 0x00,
 };
 
