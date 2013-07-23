@@ -15,27 +15,11 @@
 #include <fstream>
 #include <vector>
 #include <memory>
+#include <string>
 #include <tuple>
 #include <map>
 
 #include <cassert>
-
-#ifndef CPLUS_USE_STD_STRING
-#include "string.h"
-
-#else
-#include <string>
-
-namespace cplus {
-using std::string;
-
-struct string_pool : std::allocator< char >
-	{ string_pool( char const * ) {} };
-string_pool literal_pool( "" );
-string repool( string s, string_pool p ) { return { s.c_str(), p }; }
-}
-
-#endif
 
 namespace cplus {
 
@@ -391,6 +375,7 @@ struct raw_file : input_source {
 		} while ( count == sizeof buf );
 	}
 };
+template< typename string >
 struct raw_text : input_source {
 	string text;
 	

@@ -6,6 +6,19 @@
 
 #include "framework.h"
 
+#ifndef CPLUS_USE_STD_STRING
+#	include "string.h"
+#else
+namespace cplus {
+	using std::string;
+
+	struct string_pool : std::allocator< char >
+		{ string_pool( char const * ) {} };
+	string_pool literal_pool( "" );
+	string repool( string s, string_pool p ) { return { s.c_str(), p }; }
+}
+#endif
+
 namespace cplus {
 
 struct token : construct {

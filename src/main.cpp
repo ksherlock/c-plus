@@ -86,7 +86,7 @@ int main( int argc, char *argv[] ) {
 	
 	auto && pile = cplus::pile< cplus::phase1_2, cplus::phase3 >( common_pile );
 
-	instantiate( std::make_shared< cplus::raw_text >(
+	instantiate( std::make_shared< cplus::raw_text< std::string > >(
 		"#define __STDC__ 1\n"
 		"#define __cplusplus 199711L //201103L\n"
 		"#define __i386__ 1\n"

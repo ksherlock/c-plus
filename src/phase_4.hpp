@@ -618,7 +618,7 @@ class pragma_filter
 	
 	token pragma_token; // only for reporting non-termination error
 public:
-	enum { normal, open_paren, string, close_paren } state;
+	enum { normal, open_paren, string_lit, close_paren } state;
 	
 	template< typename config_ret_type >
 	config_ret_type &get_config() {
@@ -650,15 +650,15 @@ public:
 		case open_paren:	state = normal;
 							this->template diagnose< diagnose_policy::fatal, error >( in != pp_constants::lparen,
 								in, "_Pragma operand must be in parentheses (§16.9)." );
-							state = string;
+							state = string_lit;
 							return;
-		case string:	{
+		case string_lit: {
 							state = close_paren;
 							this->template diagnose< diagnose_policy::fatal, error >( in.type != token_type::string_lit,
 								in, "_Pragma operand must be a string (§16.9)." );
 							
 							tokens args;
-							instantiate( std::make_shared< raw_text >( destringize( in.s ), in ),
+							instantiate( std::make_shared< raw_text< string > >( destringize( in.s ), in ),
 								pile< phase3 >( get_config< phase3_config >(),
 									util::function< void( token && ), void( error && ) >(
 										[ & args ]( token && t ){ args.push_back( std::move( t ) ); },
