@@ -91,9 +91,8 @@ class lexer : public stage< output_iterator, lexer_config >,
 	
 	void general_path( raw_char const &in, pp_char_source in_s ) {
 		char32_t &c = utf8.result;
-		if ( state == block_comment || state == line_comment || ( state == header_name && ( token.type == block_comment || token.type == space_run ) ) ) {
-			// Disable UTF-8 decoding where possible, but avoid generating diagnostics on non-characters.
-			c = in.c;
+		if ( decode_state() == lex_decode_state::raw ) {
+			c = in.c; // Disable UTF-8 decoding UCNs don't exist, but avoid generating diagnostics on non-characters.
 		} else {
 			bool undo_multibyte;
 			try {
@@ -103,11 +102,11 @@ class lexer : public stage< output_iterator, lexer_config >,
 						this->template diagnose< diagnose_policy::pass, error >( c >= 0xD800 && c <= 0xDFFF, in,
 							"This is a surrogate pair code point (§2.3/2). If specifying UTF-16, " // message assumes UTF-16 hasn't been encoded in UTF-8
 							"encode the desired Unicode character and the pair will be generated. Otherwise, try a hexadecimal escape sequence \"\\xDnnn\"." );
-						if ( state != rstring && state != string_lit && state != char_lit && state != escape ) {
+						if ( state != string_lit && state != char_lit && state != escape ) {
 							this->template diagnose< diagnose_policy::pass, error >(
 								in_s == pp_char_source::ucn && char_in_set( char_set::basic_source, c ),
 								in, "Please do not encode basic source text in universal-character-names (§2.3/2)." );
-							this->template diagnose< diagnose_policy::fatal, error >(
+							this->template diagnose< diagnose_policy::pass, error >(
 								( c <= 0x1F && ! char_in_set( char_set::space, c ) ) || ( c >= 0x7F && c <= 0x9F ),
 								in, "Stray control character (§2.3/2)." );
 						}
@@ -570,6 +569,16 @@ class lexer : public stage< output_iterator, lexer_config >,
 		(*this)( in );
 	}
 	
+	lex_decode_state decode_state() {
+		switch ( state ) {
+		case escape:						return lex_decode_state::escape;
+		case header_name:					if ( token.type == block_comment || token.type == space_run )
+		case block_comment: case line_comment: case line_comment_check:
+		case rstring:							return lex_decode_state::raw;
+		default:							return lex_decode_state::normal;
+		}
+	}
+	
 public:
 	template< typename ... args >
 	lexer( args && ... a )
@@ -593,12 +602,8 @@ public:
 	void operator() ( pp_char const &in )
 		{ general_path( in, in.s ); }
 	
-	void operator() ( lex_decode_state & s ) { // s must be initialized to "normal" or caller won't handle absence of this stage.
-		switch ( state ) {
-			case rstring: s = lex_decode_state::raw; break;
-			case escape: s = lex_decode_state::escape; break;
-		}
-	}
+	void operator() ( lex_decode_state & s ) // s must be initialized to "normal" or caller won't handle absence of this stage.
+		{ s = decode_state(); }
 	
 	void operator() ( line_splice in ) {
 		if ( ! this->get_config().preserve_space ) return;
