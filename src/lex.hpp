@@ -111,9 +111,9 @@ class lexer : public stage< output_iterator, lexer_config >,
 								in, "Stray control character (§2.3/2)." );
 						}
 					}
-				} catch ( util::utf8_convert::error & e ) { // get rid of whatever formerly appeared to be valid UTF-8.
+				} catch ( util::utf8_convert::error & e ) { // Get rid of whatever formerly appeared to be valid UTF-8.
 					undo_multibyte = e.incomplete;
-					throw error( in, "Malformed UTF-8." );
+					this->template diagnose< diagnose_policy::fatal, error >( true, in, "Malformed UTF-8." );
 				} catch ( ... ) {
 					undo_multibyte = c >= 0x80;
 					throw;
