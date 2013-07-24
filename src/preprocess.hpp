@@ -464,6 +464,7 @@ class preprocessor
 		state = entering;
 		instantiate( std::make_shared< inclusion >( std::move( access.path ), std::move( access.source ) ),
 			pile< char_decoder, lexer >( * this ) );
+		preprocessor::macro_context::flush(); // Invocations cannot span file boundaries.
 		
 		if ( guard_detect.valid && guard_detect.depth == conditional_depth ) {
 			guard_current_header();

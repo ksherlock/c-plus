@@ -18,7 +18,7 @@ struct macro_context_info { // information that determines how macros are expand
 	
 	typedef std::unordered_map< string, tokens const > name_map;
 	name_map macros;
-	struct presumptions { // Specific to current file. Caller's info erroneously used if macro invocation spans EOF.
+	struct presumptions { // Specific to current file.
 		token filename; // may be set by #line
 		std::int32_t line_displacement; // controlled by #line directive
 	} presumed;
@@ -44,8 +44,9 @@ public:
 	
 	void flush() {
 		replace_object_completely();
-		this->template diagnose< diagnose_policy::pass, error >( paren_depth != 0,
-			input.front(), "Unterminated macro invocation." );
+		if ( this->template diagnose< diagnose_policy::pass, error >( paren_depth != 0,
+			input.front(), "Unterminated macro invocation." ) )
+			paren_depth = 0;
 		this->pass( std::make_move_iterator( input.begin() ), std::make_move_iterator( input.end() ) );
 		input.clear();
 		definition = nullptr;
