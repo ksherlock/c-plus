@@ -274,11 +274,11 @@ private:
 					for ( std::uint8_t c : pen->s ) {
 						if ( pen->type == token_type::string_lit || pen->type == token_type::char_lit ) {
 							if ( c == '"' || c == '\\' // escape quotes and backslashes in strings, incl. hidden in UCNs
-								|| c >= 0xC0 || ( c < 0x80 && ! char_in_set( char_set::basic_source, c ) ) ) {
+								|| ( pen->s[0] != 'R' && ( c >= 0xC0 || ( c < 0x80 && ! char_in_set( char_set::basic_source, c ) ) ) ) ) {
 								s += '\\';
 							}
 							if ( this->template diagnose< diagnose_policy::pass, error >( c == '\n', * pen,
-								"Raw string contains a newline, which is invalid in the non-raw result of the # operator." ) ) {
+								"String contains an unescaped newline, which causes the # operator to produce an invalid result." ) ) {
 								s += "\\n";
 								continue;
 							}
