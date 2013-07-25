@@ -50,7 +50,7 @@ public:
 	void operator () ( raw_char const & in ) {
 		for (;; flush() ) switch ( state ) { // continue; means unshift and retry from normal state.
 		case normal:
-			switch ( in.c ) {
+			switch ( in ) {
 			case '?':
 				if ( this->get_config().disable_trigraphs || lex_state() == lex_decode_state::raw ) goto normal;
 				return shift( in, tri1 );
@@ -70,17 +70,17 @@ public:
 		
 		case cr: // Discard a \n following \r.
 			state = normal;
-			if ( in.c == '\n' ) return;
+			if ( in == '\n' ) return;
 			else continue;
 			
 		case tri1:
-			if ( in.c == '?' ) return shift( in, trigraph );
+			if ( in == '?' ) return shift( in, trigraph );
 			else continue;
 			
 		case trigraph:
 			static char const	tri_source[] =	"='()!<>-/",
 								tri_dest[] =	"#^[]|{}~\\";
-			if ( char const *sp = std::strchr( tri_source, in.c ) ) {
+			if ( char const *sp = std::strchr( tri_source, in ) ) {
 				{
 					CPLUS_FINALLY ( reset(); )
 					this->template pass< pass_policy::optional >( delimiter< struct trigraph, delimiter_sense::open >( std::move( input_buffer.front() ) ) );
@@ -91,7 +91,7 @@ public:
 				if ( dest != '\\' ) pass( mapped_char< struct trigraph >{ static_cast< std::uint8_t >( dest ), in } ); // Locate at discriminating symbol.
 				else shift( { static_cast< std::uint8_t >( dest ), in }, tri_backslash );
 				
-			} else if ( in.c == '?' ) { // May be a trigraph preceded by a "?".
+			} else if ( in == '?' ) { // May be a trigraph preceded by a "?".
 				CPLUS_FINALLY (
 					input_buffer.erase( input_buffer.begin() );
 					shift( in, trigraph ); // Shift new "?" but remain in same state.
@@ -103,7 +103,7 @@ public:
 			return;
 		
 		case backslash: case tri_backslash:
-			switch ( in.c ) {
+			switch ( in ) {
 			case 'u':
 			case 'U':
 				if ( lex_state() == lex_decode_state::escape ) continue;
@@ -112,7 +112,7 @@ public:
 			case '\r': case '\n': { // phase 2
 				CPLUS_FINALLY (
 					reset();
-					if ( in.c == '\r' ) state = cr;
+					if ( in == '\r' ) state = cr;
 				)
 				this->template pass< pass_policy::optional >( line_splice( std::move( input_buffer.front() ) ) );
 				CPLUS_DO_FINALLY
@@ -122,18 +122,18 @@ public:
 			}
 			
 		case ucn: case tri_ucn:
-			if ( ! std::isxdigit( in.c ) ) continue;
+			if ( ! std::isxdigit( in ) ) continue;
 			
 			shift( in, state );
-			if ( input_buffer.size() == ( input_buffer[1].c == 'u'? 6 : 10 ) ) {
+			if ( input_buffer.size() == ( input_buffer[1] == 'u'? 6 : 10 ) ) {
 				CPLUS_FINALLY ( reset(); )
 				
 				char32_t ucn_acc = 0;
 				for ( auto cit = input_buffer.begin() + 2; cit != input_buffer.end(); ++ cit ) {
 					ucn_acc <<= 4;
-					if ( cit->c >= '0' && cit->c <= '9' ) ucn_acc |= cit->c - '0';
-					else if ( cit->c >= 'a' && cit->c <= 'f' ) ucn_acc |= cit->c - 'a' + 10;
-					else if ( cit->c >= 'A' && cit->c <= 'F' ) ucn_acc |= cit->c - 'A' + 10;
+					if ( * cit >= '0' && * cit <= '9' ) ucn_acc |= * cit - '0';
+					else if ( * cit >= 'a' && * cit <= 'f' ) ucn_acc |= * cit - 'a' + 10;
+					else if ( * cit >= 'A' && * cit <= 'F' ) ucn_acc |= * cit - 'A' + 10;
 				}
 				this->template pass< pass_policy::optional >( delimiter< struct ucn, delimiter_sense::open >( input_buffer.front() ) );
 				this->template pass< pass_policy::optional >( delimiter< struct ucn, delimiter_sense::close >( std::move( input_buffer.back() ) ) );

@@ -73,8 +73,8 @@ class lexer : public stage< output_iterator, lexer_config >,
 		input_buffer.push_back( in );
 	}
 	void unshift( raw_char const &in ) { // accept a UTF-8 sequence
-		for ( auto && p : input_buffer ) token.s += p.c;
-		token.s += in.c; // always include final char
+		for ( auto && p : input_buffer ) token.s += p;
+		token.s += in; // always include final char
 		input_buffer.clear();
 	}
 	
@@ -82,10 +82,10 @@ class lexer : public stage< output_iterator, lexer_config >,
 		/*	Newline characters also override state_after_space, but to see a
 			newline, state must equal ws. So it's handled in "case ws:". */
 		if ( token.type != ws ) state_after_space = ws;
-		auto && guard = util::finally( [ this ]() noexcept {
+		CPLUS_FINALLY (
 			token = {};
 			token.type = state = state_after_space;
-		} );
+		)
 		lexer::stage::pass( std::move( token ) );
 		
 		static_cast< void >( guard );
@@ -94,12 +94,12 @@ class lexer : public stage< output_iterator, lexer_config >,
 	void general_path( raw_char const &in, pp_char_source in_s ) {
 		char32_t &c = utf8.result;
 		if ( decode_state() == lex_decode_state::raw ) {
-			c = in.c; // Disable UTF-8 decoding where UCNs don't exist, but avoid generating diagnostics on non-characters.
+			c = in; // Disable UTF-8 decoding where UCNs don't exist, but avoid generating diagnostics on non-characters.
 		} else {
 			bool undo_multibyte;
 			try {
 				try {
-					if ( ! utf8.in( in.c ) ) return shift( in );
+					if ( ! utf8.in( in ) ) return shift( in );
 					else {
 						this->template diagnose< diagnose_policy::pass, error >( c >= 0xD800 && c <= 0xDFFF, in,
 							"This is a surrogate pair code point (§2.3/2). If specifying UTF-16, " // message assumes UTF-16 hasn't been encoded in UTF-8
@@ -469,8 +469,8 @@ class lexer : public stage< output_iterator, lexer_config >,
 					if ( c != '<' && c != '\"' ) {
 						goto redispatch; // state_after_space is already header_name
 					}
-				} else if ( ( input_buffer[0].c == '<' && c == '>' )
-						 || ( input_buffer[0].c == '\"' && c == '\"' ) ) {
+				} else if ( ( input_buffer[0] == '<' && c == '>' )
+						 || ( input_buffer[0] == '\"' && c == '\"' ) ) {
 					token.type = state_after_space = ws;
 				}
 				shift( in );
@@ -482,7 +482,7 @@ class lexer : public stage< output_iterator, lexer_config >,
 					token.s.clear();
 					
 					token.type = header_name; // restore header name into token
-					for ( auto && p : input_buffer ) token.s.push_back( p.c );
+					for ( auto && p : input_buffer ) token.s.push_back( p );
 					input_buffer.clear(); // like unshift() but doesn't include current char
 					
 					auto state_after_space_back = state_after_space; // schedule possible continuation to line comment mode
@@ -583,7 +583,7 @@ public:
 		state( initial ), state_after_space( after_newline ), in_directive( false ) {}
 	
 	void operator() ( raw_char const &in ) {
-		if ( char_in_set( * char_set::safe_chars[ state ], in.c ) ) {
+		if ( char_in_set( * char_set::safe_chars[ state ], in ) ) {
 			//++ fast_dispatch;
 			input_buffer.clear();
 			if ( state < space_run || this->get_config().preserve_space ) {

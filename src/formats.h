@@ -56,10 +56,7 @@ struct config_pragma_base : config_base {
 struct propagate_pragma {}; // exception indicates pragma handler is defaulting
 
 struct trigraph; // Undefined but used for delimiter.
-struct ucn : construct {
-	char32_t c;
-	ucn( char32_t in_c, construct in_p = {} ) : construct( std::move( in_p ) ), c( in_c ) {}
-};
+struct ucn : raw_codepoint { using raw_codepoint::raw_codepoint; };
 template< typename /* trigraph or ucn */ >
 struct mapped_char : raw_char { using raw_char::raw_char; };
 

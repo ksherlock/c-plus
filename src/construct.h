@@ -115,11 +115,15 @@ public:
 struct error : public error_base
 	{ error( construct pos, char const * what ) : error_base( std::move( pos ), what ) {} };
 
-struct raw_char : construct {
-	std::uint8_t c;
-	
-	raw_char( std::uint8_t in_c = {}, construct in_p = {} ) : construct( std::move( in_p ) ), c( in_c ) {}
+template< typename v >
+struct raw : construct {
+	v value;
+	raw( v in_v = {}, construct in_p = {} ) : construct( std::move( in_p ) ), value( std::move( in_v ) ) {}
+	operator v & () & { return value; }
+	operator v const & () const & { return value; }
 };
+typedef raw< std::uint8_t > raw_char;
+typedef raw< char32_t > raw_codepoint;
 
 // Abstract base for user input.
 struct input_source : instantiation {
@@ -136,7 +140,7 @@ struct input_source : instantiation {
 		auto inst_p = inst.get();
 		rc.construct::operator = ( source_link( std::move( inst ), 0 ) );
 		inst_p->filter( [&p, &rc]( uint8_t c ) {
-			rc.c = c;
+			rc = c;
 			p.pass( rc );
 			advance( rc );
 		} );
