@@ -47,8 +47,6 @@ typedef std::vector< token > tokens;
 typedef raw_file inclusion;
 
 // Output format for Phases 1-2
-CPLUS_IMPORTABLE_ENUM( pp_char_source, normal, ucn, trigraph )
-
 struct config_pragma_base : config_base {
 	typedef std::function< void( tokens && ) > pragma_function;
 	typedef std::map< string, pragma_function > pragma_map;
@@ -57,10 +55,13 @@ struct config_pragma_base : config_base {
 };
 struct propagate_pragma {}; // exception indicates pragma handler is defaulting
 
-struct pp_char : raw_char {
-	pp_char( raw_char in_c = {}, pp_char_source in_s = {} ) : raw_char( std::move( in_c ) ), s( in_s ) {}
-	pp_char_source s;
+struct trigraph; // Undefined but used for delimiter.
+struct ucn : construct {
+	char32_t c;
+	ucn( char32_t in_c, construct in_p = {} ) : construct( std::move( in_p ) ), c( in_c ) {}
 };
+template< typename /* trigraph or ucn */ >
+struct mapped_char : raw_char { using raw_char::raw_char; };
 
 struct line_splice : construct
 	{ explicit line_splice( construct in_c = {} ) : construct( std::move( in_c ) ) {} };

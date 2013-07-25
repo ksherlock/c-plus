@@ -25,7 +25,7 @@ namespace char_set {
 		0x80, 0x00, 0x00, 0x00,
 	};
 	constexpr char_bitmap anything_on_line = {
-		0xFF, 0xC3, 0xFF, 0xFF, // Exclude newline, vertical tab, form feed, carriage return.
+		0xFF, 0xC7, 0xFF, 0xFF, // Exclude newline, vertical tab, form feed.
 		0xFF, 0xFF, 0xFF, 0xFF,
 		0xFF, 0xFF, 0xFF, 0xFF,
 		0xFF, 0xFF, 0xFF, 0xFF,
@@ -53,6 +53,8 @@ class lexer : public stage< output_iterator, lexer_config >,
 	enum states {
 		escape = token_type_last, exponent, directive, ud_suffix, rstring, space_run, after_newline, line_comment, line_comment_check, block_comment, initial
 	};
+	enum class pp_char_source { normal, ucn, trigraph };
+	
 	int state, state_after_space;
 	bool in_directive; // only serves to diagnose whitespace restriction of §16/4
 	
@@ -61,16 +63,16 @@ class lexer : public stage< output_iterator, lexer_config >,
 	
 	cplus::token token;
 	
-	std::vector< pp_char > input_buffer;
+	std::vector< raw_char > input_buffer;
 	string const *punct_lower, *punct_upper, *punct_match;
 	
 	std::size_t rstring_term_start, rstring_seq_len; // offset, length of rstring termination sequence
 	
 	util::utf8_convert utf8;
-	void shift( pp_char const &in ) { // defer a UTF-8 character or punctuator
+	void shift( raw_char const &in ) { // defer a UTF-8 character or punctuator
 		input_buffer.push_back( in );
 	}
-	void unshift( pp_char const &in ) { // accept a UTF-8 sequence
+	void unshift( raw_char const &in ) { // accept a UTF-8 sequence
 		for ( auto && p : input_buffer ) token.s += p.c;
 		token.s += in.c; // always include final char
 		input_buffer.clear();
@@ -92,7 +94,7 @@ class lexer : public stage< output_iterator, lexer_config >,
 	void general_path( raw_char const &in, pp_char_source in_s ) {
 		char32_t &c = utf8.result;
 		if ( decode_state() == lex_decode_state::raw ) {
-			c = in.c; // Disable UTF-8 decoding UCNs don't exist, but avoid generating diagnostics on non-characters.
+			c = in.c; // Disable UTF-8 decoding where UCNs don't exist, but avoid generating diagnostics on non-characters.
 		} else {
 			bool undo_multibyte;
 			try {
@@ -340,7 +342,7 @@ class lexer : public stage< output_iterator, lexer_config >,
 				}
 				token.s.resize( match_size ); // make token a copy of punct_match
 				
-				std::vector< pp_char > retry;
+				std::vector< raw_char > retry;
 				retry.swap( input_buffer ); // Buffer will be clear if any pass throws (and meaningful chars lost).
 				
 				if ( token.type == directive ) {
@@ -425,7 +427,7 @@ class lexer : public stage< output_iterator, lexer_config >,
 		case string_lit:
 		case char_lit:
 			if ( in_s == pp_char_source::ucn && char_in_set( char_set::basic_source, c ) ) {
-				goto unmap_ucn; // Basic source UCNs are special, and must be processed like escapes.
+				return unmap_ucn( c, in ); // Basic source UCNs are special, and must be processed like escapes.
 			}
 			unshift( in );
 			switch ( c ) {
@@ -440,23 +442,10 @@ class lexer : public stage< output_iterator, lexer_config >,
 		// Don't map escape sequences yet, as that depends on execution charset.
 		case escape:
 			// But do *unmap* UCNs, since eg "\$" = "\\u0024" greedily matches the backslash escape first.
-			if ( ! char_in_set( char_set::basic_source, c ) ) {
-			unmap_ucn:
-				int digits = c >= 0x10000? 8 : 4;
-				token.s += digits == 4? "\\u" : "\\U";
-				std::ostringstream s;
-				s.width( digits );
-				s.fill( '0' );
-				s.setf( std::ios::hex, std::ios::basefield );
-				s.setf( std::ios::uppercase );
-				s << static_cast< uint32_t >( c );
-				//token.s += s.str();
-				token.s += s.str().c_str();
-				input_buffer.clear();
-			} else unshift( in );
-			state = static_cast< states >( token.type );
-			this->template diagnose< diagnose_policy::pass, error >( in_s == pp_char_source::ucn, in, "ICE: failed to inhibit UCN conversion." );
-			return;
+		state = static_cast< states >( token.type );
+		this->template diagnose< diagnose_policy::pass, error >( in_s == pp_char_source::ucn, in, "ICE: failed to inhibit UCN conversion." );
+			if ( ! char_in_set( char_set::basic_source, c ) ) return unmap_ucn( c, in );
+			else return unshift( in );
 		
 		case ud_suffix: // This only checks the first char to see if a suffix exists.
 			if ( char_in_set( char_set::initial, c ) ) {
@@ -554,14 +543,27 @@ class lexer : public stage< output_iterator, lexer_config >,
 		}
 	}
 	
-	void header_name_retry( pp_char const & in ) {
+	void header_name_retry( raw_char const & in ) {
 		state = state_after_space = ws;
 		token = {};
 		
-		std::vector< pp_char > input_back;
+		std::vector< raw_char > input_back;
 		swap( input_back, input_buffer );
 		for ( auto && p : input_back ) (*this)( p );
 		(*this)( in ); // Do not pass space previously stored in token.s inside a UTF-8 sequence.
+	}
+	
+	void unmap_ucn( char32_t c, construct loc ) {
+		(*this) ( raw_char( '\\', loc ) );
+		int digits = c >= 0x10000? 8 : 4;
+		(*this) ( raw_char( digits == 4? 'u' : 'U', loc ) );
+		std::ostringstream s;
+		s.width( digits );
+		s.fill( '0' );
+		s.setf( std::ios::hex, std::ios::basefield );
+		s.setf( std::ios::uppercase );
+		s << static_cast< std::uint32_t >( c );
+		for ( char c : s.str() ) (*this) ( raw_char( c, loc ) );
 	}
 	
 	lex_decode_state decode_state() {
@@ -594,13 +596,14 @@ public:
 		}
 	}
 	
-	void operator() ( pp_char const &in )
-		{ general_path( in, in.s ); }
+	void operator () ( mapped_char< ucn > in ) {
+		general_path( in, pp_char_source::ucn );
+	}
 	
-	void operator() ( lex_decode_state & s ) // s must be initialized to "normal" or caller won't handle absence of this stage.
+	void operator () ( lex_decode_state & s ) // s must be initialized to "normal" or caller won't handle absence of this stage.
 		{ s = decode_state(); }
 	
-	void operator() ( line_splice in ) {
+	void operator () ( line_splice in ) {
 		if ( ! this->get_config().preserve_space ) return;
 		if ( state == line_comment || state == block_comment || state == space_run || state == after_newline || ( state == ws && ! token.s.empty() ) ) {
 			token.s += "\\\n";
@@ -617,7 +620,7 @@ public:
 			state == string_lit || state == char_lit || state == rstring,
 			token, "Unterminated literal." );
 		
-		(*this)( '\n' );
+		(*this)( raw_char( '\n' ) );
 		
 		this->template diagnose< diagnose_policy::pass, error >(
 			state != ws && state != after_newline && state != space_run,

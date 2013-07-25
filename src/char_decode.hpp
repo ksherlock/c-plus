@@ -11,156 +11,149 @@
 
 namespace cplus {
 
-template< typename output_iterator >
-class char_decoder : public stage< output_iterator, char_decoder_config >,
-	pp_char_source_import_base {
-	
+template< typename output >
+class char_decoder : public stage< output, char_decoder_config > {
 	using char_decoder::stage::pass;
 	
-	enum states { tri1 = pp_char_source_last, backslash, msdos };
-	int state;
+	enum state { normal, cr, tri1, trigraph, backslash, tri_backslash, ucn, tri_ucn } state = normal;
 	
-	int unicode_remaining; // used by UCN state machine
-	char32_t ucn_acc;
+	std::vector< raw_char > input_buffer;
 	
-	pp_char shift_buffer[ 9 ], *shift_p; // worst case is "\U1234567Z"
-	
-	void shift_reset()
-		{ shift_p = shift_buffer; }
-	
-	void shift( raw_char const &c )
-		{ * shift_p ++ = { c, normal }; }
-	
-	void unshift() {
-		auto && guard = util::finally( [this]() noexcept { shift_reset(); } );
-		pass( shift_buffer, shift_p );
-		static_cast< void >( guard );
+	void reset() noexcept {
+		state = normal;
+		input_buffer.clear();
+	}
+	void shift( raw_char in, enum state next ) noexcept {
+		state = next;
+		input_buffer.push_back( std::move( in ) ); // Would be better to reserve, but max size is 10.
 	}
 	
-	lex_decode_state get_decode_state() {
+	lex_decode_state lex_state() {
 		lex_decode_state ret = {};
 		this->template pass< pass_policy::optional >( ret );
 		return ret;
 	}
 	
 public:
-	template< typename ... args >
-	char_decoder( args && ... a )
-		: char_decoder::stage( std::forward< args >( a ) ... ),
-		state{ normal }, shift_p{ shift_buffer } {}
+	using char_decoder::stage::stage;
 	
-	void flush()
-		{ unshift(); }
+	void flush() {
+		CPLUS_FINALLY ( reset(); )
+		if ( state == tri_backslash || state == tri_ucn ) { // A ??/ trigraph shifted a backslash.
+			pass( mapped_char< struct trigraph >{ '\\', input_buffer.front() } );
+			pass( input_buffer.begin() + 1, input_buffer.end() );
+			
+		} else pass( input_buffer.begin(), input_buffer.end() );
+		CPLUS_DO_FINALLY
+	}
 	
-	void operator()( raw_char const &c ) {
-		for (;;) switch ( state ) {
+	void operator () ( raw_char const & in ) {
+		for (;; flush() ) switch ( state ) { // continue; means unshift and retry from normal state.
 		case normal:
-			switch ( c.c ) {
-			case '?':	if ( this->get_config().disable_trigraphs
-							|| get_decode_state() == lex_decode_state::raw ) goto normal;
-						state = tri1;		shift( c );		return;
-			case '\\':	if ( get_decode_state() == lex_decode_state::raw ) goto normal;
-						state = backslash;	shift( c );		return;
-			default: normal:				pass( c );		return;
+			switch ( in.c ) {
+			case '?':
+				if ( this->get_config().disable_trigraphs || lex_state() == lex_decode_state::raw ) goto normal;
+				return shift( in, tri1 );
+				
+			case '\\':
+				if ( lex_state() == lex_decode_state::raw ) goto normal;
+				return shift( in, backslash );
+				
+			case '\r':
+				state = cr;
+				pass( raw_char( '\n', in ) );
+				return;
+				
+			default: normal:
+				return pass( in );
 			}
 		
+		case cr: // Discard a \n following \r.
+			state = normal;
+			if ( in.c == '\n' ) return;
+			else continue;
+			
 		case tri1:
-			switch ( c.c ) {
-			case '?':	state = trigraph;	shift( c );		return;
-			default:	state = normal;		unshift();		continue;
-			}
-		
+			if ( in.c == '?' ) return shift( in, trigraph );
+			else continue;
+			
 		case trigraph:
-			static char const	tri_source[] =	"='()!<>-",
-								tri_dest[] =	"#^[]|{}~";
-			if ( char const *sp = std::strchr( tri_source, c.c ) ) {
-				shift_reset();
-				state = normal; // reset state
-				pass( pp_char{ { static_cast< std::uint8_t >( tri_dest[ sp - tri_source ] ), c }, trigraph } ); // pass trigraph, located at discriminating symbol
-				return;
-			} else if ( c.c == '/' ) {
-				shift_reset();
-				* shift_p ++ = { { static_cast< std::uint8_t >( '\\' ), c }, trigraph };
-				state = backslash;
-				return;
-			} else if ( c.c == '?' ) { // may be a trigraph preceded by a "?"
-				auto && guard = util::finally( [&]() noexcept {
-					shift_p = std::move( shift_buffer + 1, shift_p, shift_buffer );
-					shift( c.c ); // shift current "?"
-				} );
-				pass( * shift_buffer ); // unshift only non-trigraph "?"
+			static char const	tri_source[] =	"='()!<>-/",
+								tri_dest[] =	"#^[]|{}~\\";
+			if ( char const *sp = std::strchr( tri_source, in.c ) ) {
+				{
+					CPLUS_FINALLY ( reset(); )
+					this->template pass< pass_policy::optional >( delimiter< struct trigraph, delimiter_sense::open >( std::move( input_buffer.front() ) ) );
+					this->template pass< pass_policy::optional >( delimiter< struct trigraph, delimiter_sense::close >( in ) );
+					CPLUS_DO_FINALLY
+				}
+				char dest = tri_dest[ sp - tri_source ];
+				if ( dest != '\\' ) pass( mapped_char< struct trigraph >{ static_cast< std::uint8_t >( dest ), in } ); // Locate at discriminating symbol.
+				else shift( { static_cast< std::uint8_t >( dest ), in }, tri_backslash );
 				
-				static_cast< void >( guard );
-				return; // remain in same state
+			} else if ( in.c == '?' ) { // May be a trigraph preceded by a "?".
+				CPLUS_FINALLY (
+					input_buffer.erase( input_buffer.begin() );
+					shift( in, trigraph ); // Shift new "?" but remain in same state.
+				)
+				pass( std::move( input_buffer.front() ) ); // Flush only non-trigraph "?".
+				CPLUS_DO_FINALLY
 			
-			} else { // not a trigraph
-						state = normal;		unshift();		continue;
-			}
+			} else continue; // Not a trigraph.
+			return;
 		
-		case backslash:
-			switch ( c.c ) {
+		case backslash: case tri_backslash:
+			switch ( in.c ) {
 			case 'u':
-			case 'U':	if ( get_decode_state() == lex_decode_state::escape ) {
-						state = normal;		unshift();		continue;
-						}
-						ucn_acc = 0;
-						unicode_remaining = c.c == 'u'? 4 : 8;
-						state = ucn;		shift( c );		return;
-						
-			case '\r':	state = msdos;		shift( c );		return; // phase 2
-			
-			case '\n': splice: {
-					auto && guard = util::finally( [this]() noexcept {
-						state = normal;		shift_reset();
-					} );
-					this->template pass< pass_policy::optional >( line_splice( std::move( shift_buffer[0] ) ) );
-					static_cast< void >( guard );
-															return; // phase 2
-				}
-			default:	state = normal;		unshift();		continue;
-			}
-		
-		case msdos: // phase 2. Delete any \CRLF, not checking for consistency.
-			switch ( c.c ) {
-			case '\n':	goto splice;
-			default:	state = normal;		unshift();		continue;
-			}
-			
-		case ucn:
-			{
-				int digit;
-				if ( c.c >= '0' && c.c <= '9' ) digit = c.c - '0';
-				else if ( c.c >= 'a' && c.c <= 'f' ) digit = c.c - 'a' + 10;
-				else if ( c.c >= 'A' && c.c <= 'F' ) digit = c.c - 'A' + 10;
-				else {
-						state = normal;		unshift();		continue;
-				}
-				ucn_acc = ( ucn_acc << 4 ) | digit;
-			}
-			
-			if ( -- unicode_remaining ) {
-				shift( c );
+			case 'U':
+				if ( lex_state() == lex_decode_state::escape ) continue;
+				return shift( in, state == tri_backslash? tri_ucn : ucn );
+				
+			case '\r': case '\n': { // phase 2
+				CPLUS_FINALLY (
+					reset();
+					if ( in.c == '\r' ) state = cr;
+				)
+				this->template pass< pass_policy::optional >( line_splice( std::move( input_buffer.front() ) ) );
+				CPLUS_DO_FINALLY
 				return;
-			} else {
-				auto && guard = util::finally( [this]() noexcept {
-					state = normal;
-					shift_reset();
-				} );
+			}
+			default: continue;
+			}
+			
+		case ucn: case tri_ucn:
+			if ( ! std::isxdigit( in.c ) ) continue;
+			
+			shift( in, state );
+			if ( input_buffer.size() == ( input_buffer[1].c == 'u'? 6 : 10 ) ) {
+				CPLUS_FINALLY ( reset(); )
+				
+				char32_t ucn_acc = 0;
+				for ( auto cit = input_buffer.begin() + 2; cit != input_buffer.end(); ++ cit ) {
+					ucn_acc <<= 4;
+					if ( cit->c >= '0' && cit->c <= '9' ) ucn_acc |= cit->c - '0';
+					else if ( cit->c >= 'a' && cit->c <= 'f' ) ucn_acc |= cit->c - 'a' + 10;
+					else if ( cit->c >= 'A' && cit->c <= 'F' ) ucn_acc |= cit->c - 'A' + 10;
+				}
+				this->template pass< pass_policy::optional >( delimiter< struct ucn, delimiter_sense::open >( input_buffer.front() ) );
+				this->template pass< pass_policy::optional >( delimiter< struct ucn, delimiter_sense::close >( std::move( input_buffer.back() ) ) );
+				
 				if ( ucn_acc < 0x80 ) {
-					pass( pp_char{ { static_cast< std::uint8_t >( ucn_acc ), shift_buffer[0] }, ucn } );
-				
+					pass( mapped_char< struct ucn >( static_cast< std::uint8_t >( ucn_acc ), input_buffer.front() ) );
+			
 				} else { // convert ucn_acc to UTF-8
-					unicode_remaining = 6; // number of UTF-8 trailer chars
+					int unicode_remaining = 6; // number of UTF-8 trailer chars
 					for ( int shift = 31; ucn_acc >> shift == 0; shift -= 5 ) -- unicode_remaining;
-				
-					pass( pp_char{ { static_cast< std::uint8_t >( 0x7F80 >> unicode_remaining | ucn_acc >> unicode_remaining * 6 ), shift_buffer[0] }, ucn } );
+			
+					pass( mapped_char< struct ucn >( static_cast< std::uint8_t >( 0x7F80 >> unicode_remaining | ucn_acc >> unicode_remaining * 6 ), input_buffer.front() ) );
 					while ( unicode_remaining -- ) {
-						pass( pp_char{ { static_cast< std::uint8_t >( 0x80 | ( ( ucn_acc >> unicode_remaining * 6 ) & 0x3F ) ), shift_buffer[0] }, ucn } );
+						pass( mapped_char< struct ucn >( static_cast< std::uint8_t >( 0x80 | ( ( ucn_acc >> unicode_remaining * 6 ) & 0x3F ) ), input_buffer.front() ) );
 					}
 				}
-				static_cast< void >( guard );
-				return;
+				this->template pass< pass_policy::optional >( cplus::ucn( ucn_acc, std::move( input_buffer.front() ) ) );
+				CPLUS_DO_FINALLY
 			}
+			return;
 		}
 	}
 };
