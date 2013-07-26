@@ -576,20 +576,16 @@ public:
 		{ accept( in ); ++ multibyte_count; }
 	
 	void operator () ( raw_codepoint const & in ) {
+		if ( multibyte_count == 1 ) {
+			raw_char in_char( token.s.back(), in );
+			multibyte_reject();
+			return (*this) ( std::move( in_char ) );
+		}
 		CPLUS_FINALLY ( multibyte_reject(); ) // Set multibyte_count = 0 to accept the sequence.
 		
 		this->template diagnose< diagnose_policy::pass, error >( in >= 0xD800 && in <= 0xDFFF, in,
 			"This is a surrogate pair code point (§2.3/2). If specifying UTF-16, " // message assumes UTF-16 hasn't been encoded in UTF-8
 			"encode the desired Unicode character and the pair will be generated. Otherwise, try a hexadecimal escape sequence \"\\xDnnn\"." );
-	
-		if ( multibyte_count == 1 ) { // TODO this doesn't belong here; it indicates UCN really is a separate construct from raw_codepoint.
-			raw_char in_char( token.s.back(), in );
-			token.s.pop_back();
-			this->template diagnose< diagnose_policy::pass, error >(
-				char_in_set( char_set::basic_source, in ) && state != string_lit && state != char_lit && state != escape,
-				in, "Please do not encode basic source text in universal-character-names (§2.3/2)." );
-			return (*this) ( std::move( in_char ) );
-		}
 		
 		switch ( state ) {
 		case id: case directive: case num: case exponent:
@@ -644,6 +640,18 @@ public:
 		}
 		
 		CPLUS_DO_FINALLY
+	}
+	
+	void operator () ( ucn in ) {
+		auto prev_decode_state = decode_state();
+		auto prev_state = state;
+		(*this) ( static_cast< raw_codepoint const & >( in ) );
+		
+		this->template diagnose< diagnose_policy::pass, error >( prev_decode_state != lex_decode_state::normal,
+			in, "ICE: Interpreted a UCN by accident." )
+		|| this->template diagnose< diagnose_policy::pass, error >(
+			char_in_set( char_set::basic_source, in ) && prev_state != string_lit && prev_state != char_lit,
+			in, "Please do not encode basic source text in universal-character-names (§2.3/2)." );
 	}
 	
 	void operator () ( multibyte_error && e ) {
