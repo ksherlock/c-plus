@@ -122,6 +122,7 @@ struct raw : construct {
 	operator v & () & { return value; }
 	operator v const & () const & { return value; }
 };
+typedef std::uint8_t char_t;
 typedef raw< std::uint8_t > raw_char;
 typedef raw< char32_t > raw_codepoint;
 

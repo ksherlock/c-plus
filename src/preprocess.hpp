@@ -659,7 +659,7 @@ public:
 							
 							tokens args;
 							instantiate( std::make_shared< raw_text< string > >( destringize( in.s ), in ),
-								pile< lexer >( get_config< lexer_config >(),
+								pile< utf8_decoder, lexer >( get_config< lexer_config >(),
 									util::function< void( token && ), void( error && ) >(
 										[ & args ]( token && t ){ args.push_back( std::move( t ) ); },
 										this->template pass_function< error && >()

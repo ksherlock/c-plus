@@ -1,11 +1,12 @@
 // Cplus project, sample driver
 // copyright David Krauss, created 8/22/11
 
+#include <iostream>
+
 #include "char_decode.hpp"
 #include "lex.hpp"
 #include "preprocess.hpp"
 
-#include <iostream>
 #include <typeinfo>
 #include <iterator>
 
@@ -84,7 +85,7 @@ int main( int argc, char *argv[] ) {
 		)
 	);
 	
-	auto && pile = cplus::pile< cplus::char_decoder, cplus::lexer >( common_pile );
+	auto && pile = cplus::pile< cplus::char_decoder, utf8_decoder, cplus::lexer >( common_pile );
 
 	instantiate( std::make_shared< cplus::raw_text< std::string > >(
 		"#define __STDC__ 1\n"

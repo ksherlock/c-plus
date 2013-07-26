@@ -11,11 +11,23 @@
 
 namespace cplus {
 
+template< typename output, typename ... config >
+class decode_stage : public stage< output, config ... > {
+protected:
+	using decode_stage::stage::stage;
+	
+	lex_decode_state lex_state() {
+		lex_decode_state ret = {};
+		this->template pass< pass_policy::optional >( ret );
+		return ret;
+	}
+};
+
 template< typename output >
-class char_decoder : public stage< output, char_decoder_config > {
+class char_decoder : public decode_stage< output, char_decoder_config > {
 	using char_decoder::stage::pass;
 	
-	enum state { normal, cr, tri1, trigraph, backslash, tri_backslash, ucn, tri_ucn } state = normal;
+	enum state { normal, cr, tri1, trigraph, backslash, ucn } state = normal;
 	
 	std::vector< raw_char > input_buffer;
 	
@@ -28,22 +40,12 @@ class char_decoder : public stage< output, char_decoder_config > {
 		input_buffer.push_back( std::move( in ) ); // Would be better to reserve, but max size is 10.
 	}
 	
-	lex_decode_state lex_state() {
-		lex_decode_state ret = {};
-		this->template pass< pass_policy::optional >( ret );
-		return ret;
-	}
-	
 public:
-	using char_decoder::stage::stage;
+	using char_decoder::decode_stage::decode_stage;
 	
 	void flush() {
 		CPLUS_FINALLY ( reset(); )
-		if ( state == tri_backslash || state == tri_ucn ) { // A ??/ trigraph shifted a backslash.
-			pass( mapped_char< struct trigraph >{ '\\', input_buffer.front() } );
-			pass( input_buffer.begin() + 1, input_buffer.end() );
-			
-		} else pass( input_buffer.begin(), input_buffer.end() );
+		pass( std::make_move_iterator( input_buffer.begin() ), std::make_move_iterator( input_buffer.end() ) );
 		CPLUS_DO_FINALLY
 	}
 	
@@ -52,11 +54,11 @@ public:
 		case normal:
 			switch ( in ) {
 			case '?':
-				if ( this->get_config().disable_trigraphs || lex_state() == lex_decode_state::raw ) goto normal;
+				if ( this->get_config().disable_trigraphs || this->lex_state() == lex_decode_state::raw ) goto normal;
 				return shift( in, tri1 );
 				
 			case '\\':
-				if ( lex_state() == lex_decode_state::raw ) goto normal;
+				if ( this->lex_state() == lex_decode_state::raw ) goto normal;
 				return shift( in, backslash );
 				
 			case '\r':
@@ -88,8 +90,8 @@ public:
 					CPLUS_DO_FINALLY
 				}
 				char dest = tri_dest[ sp - tri_source ];
-				if ( dest != '\\' ) pass( mapped_char< struct trigraph >{ static_cast< std::uint8_t >( dest ), in } ); // Locate at discriminating symbol.
-				else shift( { static_cast< std::uint8_t >( dest ), in }, tri_backslash );
+				if ( dest != '\\' ) pass( raw_char{ static_cast< std::uint8_t >( dest ), in } ); // Locate at discriminating symbol.
+				else shift( { static_cast< std::uint8_t >( dest ), in }, backslash );
 				
 			} else if ( in == '?' ) { // May be a trigraph preceded by a "?".
 				CPLUS_FINALLY (
@@ -102,12 +104,12 @@ public:
 			} else continue; // Not a trigraph.
 			return;
 		
-		case backslash: case tri_backslash:
+		case backslash:
 			switch ( in ) {
 			case 'u':
 			case 'U':
-				if ( lex_state() == lex_decode_state::escape ) continue;
-				return shift( in, state == tri_backslash? tri_ucn : ucn );
+				if ( this->lex_state() == lex_decode_state::escape ) continue;
+				return shift( in, ucn );
 				
 			case '\r': case '\n': { // phase 2
 				CPLUS_FINALLY (
@@ -121,7 +123,7 @@ public:
 			default: continue;
 			}
 			
-		case ucn: case tri_ucn:
+		case ucn:
 			if ( ! std::isxdigit( in ) ) continue;
 			
 			shift( in, state );
@@ -139,22 +141,64 @@ public:
 				this->template pass< pass_policy::optional >( delimiter< struct ucn, delimiter_sense::close >( std::move( input_buffer.back() ) ) );
 				
 				if ( ucn_acc < 0x80 ) {
-					pass( mapped_char< struct ucn >( static_cast< std::uint8_t >( ucn_acc ), input_buffer.front() ) );
+					pass( utf8_char( static_cast< std::uint8_t >( ucn_acc ), input_buffer.front() ) );
 			
 				} else { // convert ucn_acc to UTF-8
 					int unicode_remaining = 6; // number of UTF-8 trailer chars
 					for ( int shift = 31; ucn_acc >> shift == 0; shift -= 5 ) -- unicode_remaining;
 			
-					pass( mapped_char< struct ucn >( static_cast< std::uint8_t >( 0x7F80 >> unicode_remaining | ucn_acc >> unicode_remaining * 6 ), input_buffer.front() ) );
+					pass( utf8_char( static_cast< std::uint8_t >( 0x7F80 >> unicode_remaining | ucn_acc >> unicode_remaining * 6 ), input_buffer.front() ) );
 					while ( unicode_remaining -- ) {
-						pass( mapped_char< struct ucn >( static_cast< std::uint8_t >( 0x80 | ( ( ucn_acc >> unicode_remaining * 6 ) & 0x3F ) ), input_buffer.front() ) );
+						pass( utf8_char( static_cast< std::uint8_t >( 0x80 | ( ( ucn_acc >> unicode_remaining * 6 ) & 0x3F ) ), input_buffer.front() ) );
 					}
 				}
-				this->template pass< pass_policy::optional >( cplus::ucn( ucn_acc, std::move( input_buffer.front() ) ) );
+				this->template pass< pass_policy::optional >( raw_codepoint( ucn_acc, std::move( input_buffer.front() ) ) );
 				CPLUS_DO_FINALLY
 			}
 			return;
 		}
+	}
+};
+
+template< typename output >
+class utf8_decoder : public decode_stage< output > {
+	raw_codepoint result;
+	char32_t min;
+	int len = 0;
+	
+	void non_ascii( raw_char const &c ) {
+		this->pass( utf8_char( c, c ) ); // Pass through.
+		
+		if ( len == 0 ) {
+			this->template diagnose< diagnose_policy::fatal, utf8_error >( c < 0xC0 || c >= 0xFE, c );
+			len = 1;
+			while ( c & ( 0x40 >> len ) ) ++ len;
+			result = { static_cast< char32_t >( ( c + ( 0x80 >> len ) ) & 0xFF ), c };
+			min = 1 << ( len > 1? len * 5 + 1 : 7 ); // The lowest result which merits this many bytes.
+		} else {
+			if ( c < 0x80 || c >= 0xC0 ) {
+				flush(); // Abort and reset.
+				return (*this) ( c ); // Retry.
+			}
+			result = result << 6 | ( c & 0x3F );
+			if ( -- len != 0 ) return;
+			this->template diagnose< diagnose_policy::pass, utf8_error >( result < min, result ); // Identifier identity issues may result from using invalid UTF-8.
+			this->pass( std::move( result ) );
+		}
+	}
+public:
+	using utf8_decoder::decode_stage::decode_stage;
+	
+	void operator () ( raw_char const & c ) {
+		if ( this->lex_state() != lex_decode_state::raw && ( len != 0 || c >= 0x80 ) ) non_ascii( c );
+		else this->pass( c );
+	}
+	void flush() {
+		CPLUS_FINALLY (
+			result = {};
+			len = 0;
+		)
+		this->template diagnose< diagnose_policy::pass, utf8_error >( len != 0, std::move( result ) );
 	}
 };
 

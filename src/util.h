@@ -146,44 +146,6 @@ template< typename bound >
 implicit_thunk< typename std::decay< bound >::type > make_implicit_thunk( bound &&f )
 	{ return { std::forward< bound >( f ) }; }
 
-class utf8_convert {
-	char32_t min;
-	int len;
-public:
-	char32_t result;
-	
-	utf8_convert() : len( 0 ) {}
-	bool in( std::uint8_t c ) {
-		if ( len != 0 || c >= 0x80 ) return non_ascii( c );
-		result = c;
-		return true;
-	}
-	
-	struct error : std::range_error {
-		bool incomplete; // true if operator() returned false for this character.
-		error( bool in_incomplete ) : std::range_error( "malformed UTF-8" ), incomplete( in_incomplete ) {}
-	};
-private:
-	bool non_ascii( std::uint8_t c ) {
-		if ( len == 0 ) {
-			if ( c >= 0xC0 ) {
-				if ( c == 0xFF ) throw error( false );
-				len = 1;
-				while ( c & ( 0x40 >> len ) ) ++ len;
-				result = ( c + ( 0x80 >> len ) ) & 0xFF;
-				min = 1 << ( len > 1? len * 5 + 1 : 7 ); // lowest acceptible end result
-				return false;
-			} else throw error( false );
-		} else {
-			if ( c < 0x80 || c >= 0xC0 ) throw error( true );
-			result = result << 6 | ( c & 0x3F );
-			if ( -- len != 0 ) return false;
-			if ( result < min ) throw error( true );
-			return true;
-		}
-	}
-};
-
 namespace query {
 void ctime_r( ... ); // If ::ctime_r is to be found by unqualified lookup, the fallback must be found by ADL.
 

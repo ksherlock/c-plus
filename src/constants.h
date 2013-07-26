@@ -162,11 +162,13 @@ constexpr bool char_in_set( char_set::range const (&ranges)[ n ], char32_t c ) {
 string const multichar_punctuators[] = { // sorted in ASCII lexi order
 	"!=", "##", "%:", "%:%:", "%=", "%>", "&&", "&=", "*=", "++", "+=", "--", 
 	"-=", "->", "->*", ".*", "...", "/*", "//", "/=", "::", ":>", "<%", "<:", 
-	"<::", "<<", "<<=", "<=", "==", ">=", ">>", ">>=", "^=", "|=", "||" // <:: from §2.5/3
+	"<::", "<:::", "<::>", "<<", "<<=", "<=", "==", ">=", ">>", ">>=", "^=", "|=", "||"
 }, *const multichar_punctuators_end = std::end( multichar_punctuators ),
 	*const block_comment = std::lower_bound( multichar_punctuators, multichar_punctuators_end, "/*" ),
 	*const line_comment = std::lower_bound( multichar_punctuators, multichar_punctuators_end, "//" ),
-	*const less_scope = std::lower_bound( multichar_punctuators, multichar_punctuators_end, "<::" ),
+	*const less_scope = std::lower_bound( multichar_punctuators, multichar_punctuators_end, "<::" ), // These are from §2.5/3.
+	*const alt_bracket_scope = std::lower_bound( multichar_punctuators, multichar_punctuators_end, "<:::" ),
+	*const alt_brackets = std::lower_bound( multichar_punctuators, multichar_punctuators_end, "<::>" ),
 	*const hash_alt = std::lower_bound( multichar_punctuators, multichar_punctuators_end, "%:" );
 
 string const id_punctuators[] = {

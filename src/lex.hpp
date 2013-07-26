@@ -53,7 +53,6 @@ class lexer : public stage< output_iterator, lexer_config >,
 	enum states {
 		escape = token_type_last, exponent, directive, ud_suffix, rstring, space_run, after_newline, line_comment, line_comment_check, block_comment, initial
 	};
-	enum class pp_char_source { normal, ucn, trigraph };
 	
 	int state, state_after_space;
 	bool in_directive; // only serves to diagnose whitespace restriction of §16/4
@@ -62,20 +61,28 @@ class lexer : public stage< output_iterator, lexer_config >,
 	std::size_t splice_count = 0;
 	
 	cplus::token token;
+	int multibyte_count = 0; // How many unprocessed multibyte bytes are at end of token.
 	
 	std::vector< raw_char > input_buffer;
 	string const *punct_lower, *punct_upper, *punct_match;
+	std::function< void() > input_replay = []{}; // Used for header-name corner case.
 	
 	std::size_t rstring_term_start, rstring_seq_len; // offset, length of rstring termination sequence
 	
-	util::utf8_convert utf8;
-	void shift( raw_char const &in ) { // defer a UTF-8 character or punctuator
-		input_buffer.push_back( in );
+	void shift( raw_char in ) { // Defer a UTF-8 byte, punctuator, or header-name character.
+		input_buffer.push_back( std::move( in ) );
 	}
-	void unshift( raw_char const &in ) { // accept a UTF-8 sequence
-		for ( auto && p : input_buffer ) token.s += p;
-		token.s += in; // always include final char
-		input_buffer.clear();
+	void accept( char_t in )
+		{ token.s += in; }
+	
+	void multibyte_reject() noexcept {
+		token.s.erase( token.s.end() - multibyte_count, token.s.end() );
+		multibyte_count = 0;
+	}
+	std::string multibyte_retrieve() {
+		std::string ret( token.s.end() - multibyte_count, token.s.end() );
+		multibyte_reject();
+		return ret;
 	}
 	
 	void pass() {
@@ -88,47 +95,10 @@ class lexer : public stage< output_iterator, lexer_config >,
 		)
 		lexer::stage::pass( std::move( token ) );
 		
-		static_cast< void >( guard );
+		CPLUS_DO_FINALLY
 	}
 	
-	void general_path( raw_char const &in, pp_char_source in_s ) {
-		char32_t &c = utf8.result;
-		if ( decode_state() == lex_decode_state::raw ) {
-			c = in; // Disable UTF-8 decoding where UCNs don't exist, but avoid generating diagnostics on non-characters.
-		} else {
-			bool undo_multibyte;
-			try {
-				try {
-					if ( ! utf8.in( in ) ) return shift( in );
-					else {
-						this->template diagnose< diagnose_policy::pass, error >( c >= 0xD800 && c <= 0xDFFF, in,
-							"This is a surrogate pair code point (§2.3/2). If specifying UTF-16, " // message assumes UTF-16 hasn't been encoded in UTF-8
-							"encode the desired Unicode character and the pair will be generated. Otherwise, try a hexadecimal escape sequence \"\\xDnnn\"." );
-						if ( state != string_lit && state != char_lit && state != escape ) {
-							this->template diagnose< diagnose_policy::pass, error >(
-								in_s == pp_char_source::ucn && char_in_set( char_set::basic_source, c ),
-								in, "Please do not encode basic source text in universal-character-names (§2.3/2)." );
-							this->template diagnose< diagnose_policy::pass, error >(
-								( c <= 0x1F && ! char_in_set( char_set::space, c ) ) || ( c >= 0x7F && c <= 0x9F ),
-								in, "Stray control character (§2.3/2)." );
-						}
-					}
-				} catch ( util::utf8_convert::error & e ) { // Get rid of whatever formerly appeared to be valid UTF-8.
-					undo_multibyte = e.incomplete;
-					this->template diagnose< diagnose_policy::fatal, error >( true, in, "Malformed UTF-8." );
-				} catch ( ... ) {
-					undo_multibyte = c >= 0x80;
-					throw;
-				}
-			} catch ( ... ) {
-				if ( undo_multibyte ) {
-					while ( static_cast< std::uint8_t >( token.s.back() ) < 0xC0 ) token.s.pop_back();
-					token.s.pop_back();
-				}
-				throw;
-			}
-		}
-		
+	void general_path( raw_char const &in ) {
 		for (;;) switch ( state ) {
 		case initial:
 			state = after_newline;
@@ -139,7 +109,7 @@ class lexer : public stage< output_iterator, lexer_config >,
 				do token.s += "\\\n"; while ( -- splice_count );
 			}
 		case space_run:
-			if ( c == '\n' || c == '\r' ) { // quietly allow CR on the assumption it precedes LF.
+			if ( in == '\n' || in == '\r' ) { // quietly allow CR on the assumption it precedes LF.
 				if ( in_directive ) {
 					if ( this->get_config().preserve_space && ! token.s.empty() ) {
 						pass(); // Directive includes space up to newline.
@@ -151,18 +121,18 @@ class lexer : public stage< output_iterator, lexer_config >,
 				if ( ! this->get_config().preserve_space ) token.assign_content( pp_constants::newline ); // Newline has precedence over space in non-preserving mode.
 				state = after_newline;
 				state_after_space = ws; // Cancel looking for directive or header name.
-			} else if ( char_in_set( char_set::space, c ) && token.s.empty() ) {
+			} else if ( char_in_set( char_set::space, in ) && token.s.empty() ) {
 				token.construct::operator = ( in );
 				if ( ! this->get_config().preserve_space ) token.assign_content( pp_constants::space );
 				state = space_run;
 			}
 		case after_newline:
-			if ( char_in_set( char_set::space, c ) ) {
+			if ( char_in_set( char_set::space, in ) ) {
 				if ( this->get_config().preserve_space ) {
 					assert ( token.s.get_allocator() == this->get_config().stream_pool );
-					unshift( in );
+					accept( in );
 				}
-				this->template diagnose< diagnose_policy::pass, error >( in_directive && ( c == '\v' || c == '\f' ),
+				this->template diagnose< diagnose_policy::pass, error >( in_directive && ( in == '\v' || in == '\f' ),
 					in, "Only space and horizontal tab allowed in whitespace outside comments in a directive (§16/4)." );
 				return;
 			
@@ -179,10 +149,10 @@ class lexer : public stage< output_iterator, lexer_config >,
 					continue; // Go to state_after_space.
 				}
 			redispatch: // Come back from state_after_space rejection.
-				unshift( in );
+				accept( in );
 				
-				if ( char_in_set( char_set::punct, c ) ) {
-					if ( char_in_set( char_set::multipunct, c ) ) {
+				if ( char_in_set( char_set::punct, in ) ) {
+					if ( char_in_set( char_set::multipunct, in ) ) {
 						// tentatively set type to directive if it could possibly be the opening #
 						token.type = state == after_newline? static_cast< int >( directive ) : static_cast< int >( punct );
 						state = punct;
@@ -194,15 +164,18 @@ class lexer : public stage< output_iterator, lexer_config >,
 						token.type = punct;
 						pass();
 					}
-				} else if ( char_in_set( char_set::digit, c ) ) {
+				} else if ( char_in_set( char_set::digit, in ) ) {
 					token.type = state = num;
-				} else if ( char_in_set( char_set::initial, c ) ) {
+				} else if ( char_in_set( char_set::initial, in ) ) {
 					token.type = state = id;
-				} else if ( c == '\"' ) {
+				} else if ( in == '\"' ) {
 					token.type = state = string_lit;
-				} else if ( c == '\'' ) {
+				} else if ( in == '\'' ) {
 					token.type = state = char_lit;
 				} else { // "other", such as a stray backslash
+					this->template diagnose< diagnose_policy::pass, error >(
+						( in <= 0x1F && ! char_in_set( char_set::space, in ) ) || ( in >= 0x7F && in <= 0x9F ),
+						in, "Stray control character (§2.3/2)." );
 					token.type = misc;
 					pass(); // chars not in alpha may still be catenated to an id or header-name
 				}
@@ -212,8 +185,8 @@ class lexer : public stage< output_iterator, lexer_config >,
 		case directive:
 			token.type = id;
 		case id: // Includes ud-suffix after initial character.
-			if ( char_in_set( char_set::identifier, c ) ) {
-				unshift( in );
+			if ( char_in_set( char_set::identifier, in ) ) {
+				accept( in );
 				return;
 			} else {
 				string const *id_punct
@@ -230,23 +203,23 @@ class lexer : public stage< output_iterator, lexer_config >,
 						pass();
 						continue;
 					}
-				} else if ( c == '"'
+				} else if ( in == '"'
 						&& std::binary_search( string_lit_prefixes, std::end( string_lit_prefixes ), token.s ) ) {
 					if ( token.s.back() == 'R' ) {
-						unshift( in );
+						accept( in );
 						state = rstring;
 						token.type = string_lit;
 						rstring_term_start = std::string::npos;
 						return;
 					} else {
-						unshift( in );
+						accept( in );
 						token.type = state = string_lit;
 						return;
 					}
-				} else if ( c == '\''
+				} else if ( in == '\''
 						&& std::binary_search( char_lit_prefixes, std::end( char_lit_prefixes ), token.s ) ) {
 					token.type = state = char_lit;
-					unshift( in );
+					accept( in );
 					return;
 				
 				} else {
@@ -274,9 +247,9 @@ class lexer : public stage< output_iterator, lexer_config >,
 			}
 		
 		case num:
-			if ( char_in_set( char_set::identifier, c ) || c == '.' ) {
-				unshift( in ); // Standard unclear about non-initial chars (combining diacritics) with numerals.
-				if ( c == 'E' || c == 'e' ) state = exponent;
+			if ( char_in_set( char_set::identifier, in ) || in == '.' ) {
+				accept( in ); // Standard unclear about non-initial chars (combining diacritics) with numerals.
+				if ( in == 'E' || in == 'e' ) state = exponent;
 				return;
 			} else {
 				pass();
@@ -284,8 +257,8 @@ class lexer : public stage< output_iterator, lexer_config >,
 			}
 		
 		case exponent:
-			if ( c == '+' || c == '-' ) {
-				unshift( in );
+			if ( in == '+' || in == '-' ) {
+				accept( in );
 				state = num;
 				return;
 			} else {
@@ -294,8 +267,8 @@ class lexer : public stage< output_iterator, lexer_config >,
 			}
 		
 		case punct:
-			if ( char_in_set( char_set::multipunct, c ) ) {
-				token.s += c; // don't unshift because the buffer is being used for punct
+			if ( char_in_set( char_set::multipunct, in ) ) {
+				accept( in ); // don't accept because the buffer is being used for punct
 				
 				punct_lower = std::lower_bound( punct_lower, punct_upper, token.s );
 				++ token.s.back();
@@ -325,47 +298,20 @@ class lexer : public stage< output_iterator, lexer_config >,
 					shift( in );
 					return;
 				}
-			} else if ( token.s == pp_constants::dot.s && char_in_set( char_set::digit, c ) ) {
+			} else if ( token.s == pp_constants::dot.s && char_in_set( char_set::digit, in ) ) {
 				token.type = state = num;
-				unshift( in );
+				accept( in );
 				return;
 			
 			} else punct_done: {
-				int match_size;
-				if ( ! punct_match ) {
-					match_size = 1;
-				} else if ( punct_match == less_scope ) {
-					// edge case of §2.5/3: group "<: ::" and "<: :>" specially or "< ::" by default.
-					match_size = c == ':' || c == '>'? 2 : 1;
-				} else {
-					match_size = punct_match->size();
-				}
-				token.s.resize( match_size ); // make token a copy of punct_match
-				
-				std::vector< raw_char > retry;
-				retry.swap( input_buffer ); // Buffer will be clear if any pass throws (and meaningful chars lost).
-				
-				if ( token.type == directive ) {
-					token.type = punct;
-					if ( punct_match == hash_alt || token == pp_constants::stringize ) {
-						lexer::stage::template pass< pass_policy::optional >( delimiter< struct directive, delimiter_sense::open >( token ) );
-						pass();
-						state_after_space = directive;
-						in_directive = true;
-						
-						goto punct_passed;
-					}
-				}
-				pass();
-			punct_passed:
-				std::for_each( retry.begin() + match_size - 1, retry.end(), std::ref( * this ) ); // Retry non-matched punctuation and UTF-8 lead sequence.
+				finish_punct();
 				return (*this)( std::move( in ) );
 			}
 		
 		case block_comment:
-			if ( this->get_config().preserve_space ) token.s += c; // no UTF-8 decoding in comments
+			if ( this->get_config().preserve_space ) accept( in ); // no UTF-8 decoding in comments
 			
-			if ( ! input_buffer.empty() && c == '/' && in_s != pp_char_source::ucn ) {
+			if ( ! input_buffer.empty() && in == '/' ) {
 				/*	If we got here from /​* being a pseudo punctuator, looking for #, then
 					this is still the beginning of the line, and continue looking for a #. */
 				state = token.type == directive? (int) after_newline : space_run;
@@ -373,48 +319,48 @@ class lexer : public stage< output_iterator, lexer_config >,
 			}
 			input_buffer.clear();
 			
-			if ( c == '*' && in_s != pp_char_source::ucn ) shift( in ); // advance to next sub-state
+			if ( in == '*' ) shift( in ); // advance to next sub-state
 			return;
 			
 		case line_comment_check:
-			this->template diagnose< diagnose_policy::pass, error >( char_in_set( char_set::space, c ) || in_s == pp_char_source::ucn,
+			this->template diagnose< diagnose_policy::pass, error >( ! char_in_set( char_set::space, in ),
 				in, "Only space allowed between vertical tab or form feed and line comment terminating newline (§2.8/1)." );
 		case line_comment:
-			if ( c == '\n' && in_s != pp_char_source::ucn ) {
+			if ( in == '\n' ) {
 				token.type = state = ws;
 				continue;
 			} else {
-				if ( this->get_config().preserve_space ) token.s += c;
-				if ( ( c == '\v' || c == '\f' ) && in_s != pp_char_source::ucn ) state = line_comment_check;
+				if ( this->get_config().preserve_space ) accept( in );
+				if ( in == '\v' || in == '\f' ) state = line_comment_check;
 				return;
 			}
 			
 		case rstring:
-			unshift( in );
+			accept( in );
 			if ( rstring_term_start == std::string::npos ) {
-				if ( c == '(' ) {
+				if ( in == '(' ) {
 					rstring_term_start = 0; // kludge to advance sub-state
 					return;
 				}
 				this->template diagnose< diagnose_policy::pass, error >(
-					char_in_set( char_set::space, c ) || c == ')' || c == '\\' || ! char_in_set( char_set::basic_source, c ),
+					char_in_set( char_set::space, in ) || in == ')' || in == '\\' || ! char_in_set( char_set::basic_source, in ),
 					in, "Raw string delimiter sequence must consist of alphanumeric characters and C-language punctuation except parens "
 					"and backslash (§2.14.5)." );
 				this->template diagnose< diagnose_policy::pass, error >( token.s.size() - token.s.find( '"' ) == 18,
 					in, "Raw string delimiter sequence may contain at most 16 characters (§2.14.5/2)." );
 				return;
-			} else if ( c == ')' ) {
+			} else if ( in == ')' ) {
 				rstring_term_start = token.s.size(); // termination begins at next char
 				rstring_seq_len = 0;
 				return;
 			} else if ( rstring_term_start != 0 ) {
 				// match the char to the corresponding sequence at beginning of the token
 				std::uint8_t begin_seq_char = token.s[ token.s.find( '"' ) + 1 + rstring_seq_len ];
-				if ( c == '"' && begin_seq_char == '(' ) {
+				if ( in == '"' && begin_seq_char == '(' ) {
 					state = ud_suffix;
 					return;
 					
-				} else if ( begin_seq_char != c ) {
+				} else if ( begin_seq_char != in ) {
 					rstring_term_start = 0; // mismatch, start over at next ")"
 					return;
 				} else {
@@ -426,11 +372,8 @@ class lexer : public stage< output_iterator, lexer_config >,
 		
 		case string_lit:
 		case char_lit:
-			if ( in_s == pp_char_source::ucn && char_in_set( char_set::basic_source, c ) ) {
-				return unmap_ucn( c, in ); // Basic source UCNs are special, and must be processed like escapes.
-			}
-			unshift( in );
-			switch ( c ) {
+			accept( in );
+			switch ( in ) {
 			case '\"':	if ( state == string_lit ) state = ud_suffix; return;
 			case '\'':	if ( state == char_lit ) state = ud_suffix; return;
 			case '\\':	state = escape; return;
@@ -442,13 +385,12 @@ class lexer : public stage< output_iterator, lexer_config >,
 		// Don't map escape sequences yet, as that depends on execution charset.
 		case escape:
 			// But do *unmap* UCNs, since eg "\$" = "\\u0024" greedily matches the backslash escape first.
-		state = static_cast< states >( token.type );
-		this->template diagnose< diagnose_policy::pass, error >( in_s == pp_char_source::ucn, in, "ICE: failed to inhibit UCN conversion." );
-			if ( ! char_in_set( char_set::basic_source, c ) ) return unmap_ucn( c, in );
-			else return unshift( in );
+			state = static_cast< states >( token.type );
+			if ( ! char_in_set( char_set::basic_source, in ) ) return unmap_ucn( in, in );
+			else return accept( in );
 		
 		case ud_suffix: // This only checks the first char to see if a suffix exists.
-			if ( char_in_set( char_set::initial, c ) ) {
+			if ( char_in_set( char_set::initial, in ) ) {
 				state = id;
 				continue;
 			} else {
@@ -463,27 +405,30 @@ class lexer : public stage< output_iterator, lexer_config >,
 				Good: rescanned characters have proper locations. Bad: whitespace after an invalidated name is lost. */
 		case header_name:
 			if ( token.type == header_name ) {
-				if ( c == '\n' ) return header_name_retry( in );
+				if ( in == '\n' ) return header_name_retry( in );
 				
 				else if ( input_buffer.empty() ) {
-					if ( c != '<' && c != '\"' ) {
+					if ( in != '<' && in != '\"' ) {
 						goto redispatch; // state_after_space is already header_name
 					}
-				} else if ( ( input_buffer[0] == '<' && c == '>' )
-						 || ( input_buffer[0] == '\"' && c == '\"' ) ) {
+				} else if ( ( input_buffer[0] == '<' && in == '>' )
+						 || ( input_buffer[0] == '\"' && in == '\"' ) ) {
 					token.type = state_after_space = ws;
 				}
 				shift( in );
+				auto input_replay_head = std::move( input_replay );
+				input_replay = [ this, in, input_replay_head ] { input_replay_head(); general_path( in ); };
 				return;
 				
 			} else if ( token.type == ws ) {
-				if ( c == '\n' ) pass_header_name: {
+				if ( in == '\n' ) pass_header_name: {
+					input_replay = []{};
 					auto trailing_ws = std::move( token.s ); // save any trailing space
 					token.s.clear();
 					
 					token.type = header_name; // restore header name into token
 					for ( auto && p : input_buffer ) token.s.push_back( p );
-					input_buffer.clear(); // like unshift() but doesn't include current char
+					input_buffer.clear(); // like accept() but doesn't include current char
 					
 					auto state_after_space_back = state_after_space; // schedule possible continuation to line comment mode
 					pass(); // pass header name (and reset to whitespace mode)
@@ -494,26 +439,26 @@ class lexer : public stage< output_iterator, lexer_config >,
 					
 					continue;
 				
-				} else if ( c == '/' ) {
+				} else if ( in == '/' ) {
 					shift( in );
 					token.type = punct;
 				
-				} else if ( char_in_set( char_set::space, c ) ) {
-					token.s += c;
-					this->template diagnose< diagnose_policy::pass, error >( c == '\v' || c == '\f',
+				} else if ( char_in_set( char_set::space, in ) ) {
+					accept( in );
+					this->template diagnose< diagnose_policy::pass, error >( in == '\v' || in == '\f',
 						in, "Only space and horizontal tab allowed in whitespace outside comments in a directive (§16/4)." );
 				
 				} else return header_name_retry( in );
 				return;
 			
 			} else if ( token.type == punct ) {
-				if ( c == '/' ) {
+				if ( in == '/' ) {
 					token.s += "//";
 					state_after_space = line_comment;
 					input_buffer.pop_back();
 					goto pass_header_name;
 				
-				} else if ( c == '*' ) {
+				} else if ( in == '*' ) {
 					token.type = space_run;
 					token.s += "/*";
 					input_buffer.pop_back();
@@ -527,29 +472,60 @@ class lexer : public stage< output_iterator, lexer_config >,
 				}
 			
 			} else if ( token.type == space_run ) {
-				if ( in_s != pp_char_source::ucn ) token.type = block_comment;
-				token.s += c;
+				token.type = block_comment;
+				accept( in );
 				
 			} else if ( token.type == block_comment ) {
-				if ( token.s.back() == '*' && c == '/' && in_s != pp_char_source::ucn ) {
+				if ( token.s.back() == '*' && in == '/' ) {
 					token.type = ws;
-				
-				} else if ( in_s == pp_char_source::ucn ) {
-					token.type = space_run;
 				}
-				token.s += c;
+				accept( in );
 			}
 			return;
 		}
 	}
 	
-	void header_name_retry( raw_char const & in ) {
+	void finish_punct() {
+		int match_size;
+		if ( ! punct_match ) {
+			match_size = 1;
+		} else if ( punct_match == less_scope ) {
+			match_size = 1; // Edge case of §2.5/3: Lex < :: instead of <: : .
+		} else if ( punct_match == alt_bracket_scope || punct_match == alt_brackets ) {
+			match_size = 2; // But do not interfere with <: :> or <: :: which are valid.
+		} else {
+			match_size = punct_match->size();
+		}
+		token.s.resize( match_size ); // make token a copy of punct_match
+		
+		std::vector< raw_char > retry;
+		retry.swap( input_buffer ); // Buffer will be clear if any pass throws (and meaningful chars lost).
+		
+		if ( token.type == directive ) {
+			token.type = punct;
+			if ( punct_match == hash_alt || token == pp_constants::stringize ) {
+				lexer::stage::template pass< pass_policy::optional >( delimiter< struct directive, delimiter_sense::open >( token ) );
+				pass();
+				state_after_space = directive;
+				in_directive = true;
+				
+				goto punct_passed;
+			}
+		}
+		pass();
+	punct_passed:
+		std::for_each( retry.begin() + match_size - 1, retry.end(), std::ref( * this ) ); // Retry non-matched punctuation and UTF-8 lead sequence.
+	}
+	void header_name_retry() {
 		state = state_after_space = ws;
 		token = {};
 		
-		std::vector< raw_char > input_back;
-		swap( input_back, input_buffer );
-		for ( auto && p : input_back ) (*this)( p );
+		input_buffer.clear();
+		input_replay();
+		input_replay = []{};
+	}
+	void header_name_retry( raw_char const & in ) {
+		header_name_retry();
 		(*this)( in ); // Do not pass space previously stored in token.s inside a UTF-8 sequence.
 	}
 	
@@ -587,17 +563,92 @@ public:
 			//++ fast_dispatch;
 			input_buffer.clear();
 			if ( state < space_run || this->get_config().preserve_space ) {
-				unshift( in );
+				accept( in );
 			}
 		} else {
 			//++ slow_dispatch;
 			//++ slow_histo[ state ];
-			general_path( in, pp_char_source::normal );
+			general_path( in );
 		}
 	}
 	
-	void operator () ( mapped_char< ucn > in ) {
-		general_path( in, pp_char_source::ucn );
+	void operator () ( multibyte_char in )
+		{ accept( in ); ++ multibyte_count; }
+	
+	void operator () ( raw_codepoint const & in ) {
+		CPLUS_FINALLY ( multibyte_reject(); ) // Set multibyte_count = 0 to accept the sequence.
+		
+		this->template diagnose< diagnose_policy::pass, error >( in >= 0xD800 && in <= 0xDFFF, in,
+			"This is a surrogate pair code point (§2.3/2). If specifying UTF-16, " // message assumes UTF-16 hasn't been encoded in UTF-8
+			"encode the desired Unicode character and the pair will be generated. Otherwise, try a hexadecimal escape sequence \"\\xDnnn\"." );
+	
+		if ( multibyte_count == 1 ) { // TODO this doesn't belong here; it indicates UCN really is a separate construct from raw_codepoint.
+			raw_char in_char( token.s.back(), in );
+			token.s.pop_back();
+			this->template diagnose< diagnose_policy::pass, error >(
+				char_in_set( char_set::basic_source, in ) && state != string_lit && state != char_lit && state != escape,
+				in, "Please do not encode basic source text in universal-character-names (§2.3/2)." );
+			return (*this) ( std::move( in_char ) );
+		}
+		
+		switch ( state ) {
+		case id: case directive: case num: case exponent:
+			if ( state == exponent ) state = num;
+			if ( char_in_set( char_set::identifier, in ) ) goto accept;
+		case ud_suffix:
+			if ( char_in_set( char_set::initial, in ) ) goto accept;
+			goto reinitialize;
+			
+		case string_lit: case char_lit: case rstring: accept:
+			multibyte_count = 0;
+			break;
+			
+		case escape:
+			state = static_cast< int >( token.type );
+			unmap_ucn( in, in );
+			break;
+			
+		case block_comment: case line_comment: case line_comment_check: comment:
+			if ( state == block_comment ) input_buffer.clear();
+			this->template diagnose< diagnose_policy::pass, error >( state == line_comment_check, in, "Ugh." );
+			if ( this->get_config().preserve_space ) multibyte_count = 0;
+			break;
+			
+		case header_name: case punct: default: reinitialize:
+			std::string multibyte_seq;
+			
+			if ( token.type == header_name ) { // All this handles only header names.
+				for ( int i = 0; i != multibyte_count; ++ i ) {
+					char_t byte = token.s[ token.s.size() - multibyte_count + i ];
+					shift( { byte } );
+					auto input_replay_head = std::move( input_replay );
+					input_replay = [ this, byte, in, input_replay_head ] { input_replay_head(); (*this) ( multibyte_char{ byte, in } ); };
+				}
+				auto input_replay_head = std::move( input_replay );
+				input_replay = [ this, in, input_replay_head ] { input_replay_head(); (*this) ( in ); };
+				return;
+			} else if ( token.type == block_comment ) {
+				goto comment;
+			} else if ( state == header_name ) {
+				multibyte_seq = multibyte_retrieve();
+				header_name_retry(); // Goes to punct state for <xyz> style include.
+			}
+			if ( multibyte_seq.empty() ) multibyte_seq = multibyte_retrieve();
+			
+			while ( state == punct ) finish_punct();
+		
+			if ( ! token.s.empty() ) pass();
+			token = { char_in_set( char_set::initial, in )? token_type::id : token_type::misc, std::move( multibyte_seq ), in };
+			if ( token.type == misc ) pass();
+			else state = id;
+		}
+		
+		CPLUS_DO_FINALLY
+	}
+	
+	void operator () ( multibyte_error && e ) {
+		multibyte_reject();
+		this->template diagnose< diagnose_policy::pass, multibyte_error >( true, std::move( e ) );
 	}
 	
 	void operator () ( lex_decode_state & s ) // s must be initialized to "normal" or caller won't handle absence of this stage.

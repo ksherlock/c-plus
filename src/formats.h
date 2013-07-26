@@ -46,7 +46,6 @@ typedef std::vector< token > tokens;
 
 typedef raw_file inclusion;
 
-// Output format for Phases 1-2
 struct config_pragma_base : config_base {
 	typedef std::function< void( tokens && ) > pragma_function;
 	typedef std::map< string, pragma_function > pragma_map;
@@ -55,10 +54,15 @@ struct config_pragma_base : config_base {
 };
 struct propagate_pragma {}; // exception indicates pragma handler is defaulting
 
+// Output format for Phases 1-2
+struct multibyte_error : error { using error::error; };
+struct utf8_error : multibyte_error
+	{ utf8_error( construct in ) : multibyte_error( std::move( in ), "Malformed UTF-8." ) {} };
+struct multibyte_char : raw_char { using raw_char::raw_char; }; // Part of a raw_codepoint, which is passed subsequently.
+struct utf8_char : multibyte_char { using multibyte_char::multibyte_char; };
+
 struct trigraph; // Undefined but used for delimiter.
-struct ucn : raw_codepoint { using raw_codepoint::raw_codepoint; };
-template< typename /* trigraph or ucn */ >
-struct mapped_char : raw_char { using raw_char::raw_char; };
+struct ucn;
 
 struct line_splice : construct
 	{ explicit line_splice( construct in_c = {} ) : construct( std::move( in_c ) ) {} };
