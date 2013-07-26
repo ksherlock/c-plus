@@ -139,20 +139,7 @@ public:
 				}
 				this->template pass< pass_policy::optional >( delimiter< struct ucn, delimiter_sense::open >( input_buffer.front() ) );
 				this->template pass< pass_policy::optional >( delimiter< struct ucn, delimiter_sense::close >( std::move( input_buffer.back() ) ) );
-				
-				if ( ucn_acc < 0x80 ) {
-					pass( utf8_char( static_cast< std::uint8_t >( ucn_acc ), input_buffer.front() ) );
-			
-				} else { // convert ucn_acc to UTF-8
-					int unicode_remaining = 6; // number of UTF-8 trailer chars
-					for ( int shift = 31; ucn_acc >> shift == 0; shift -= 5 ) -- unicode_remaining;
-			
-					pass( utf8_char( static_cast< std::uint8_t >( 0x7F80 >> unicode_remaining | ucn_acc >> unicode_remaining * 6 ), input_buffer.front() ) );
-					while ( unicode_remaining -- ) {
-						pass( utf8_char( static_cast< std::uint8_t >( 0x80 | ( ( ucn_acc >> unicode_remaining * 6 ) & 0x3F ) ), input_buffer.front() ) );
-					}
-				}
-				this->template pass< pass_policy::optional >( raw_codepoint( ucn_acc, std::move( input_buffer.front() ) ) );
+				this->template pass< pass_policy::optional >( cplus::ucn( ucn_acc, std::move( input_buffer.front() ) ) );
 				CPLUS_DO_FINALLY
 			}
 			return;
@@ -161,12 +148,12 @@ public:
 };
 
 template< typename output >
-class utf8_decoder : public decode_stage< output > {
+class utf8_transcoder : public decode_stage< output > {
 	raw_codepoint result;
 	char32_t min;
 	int len = 0;
 	
-	void non_ascii( raw_char const &c ) {
+	void non_ascii( raw_char const &c ) { // Decode outside operator () to keep ASCII fast.
 		this->pass( utf8_char( c, c ) ); // Pass through.
 		
 		if ( len == 0 ) {
@@ -187,10 +174,27 @@ class utf8_decoder : public decode_stage< output > {
 		}
 	}
 public:
-	using utf8_decoder::decode_stage::decode_stage;
+	using utf8_transcoder::decode_stage::decode_stage;
+	
+	void operator () ( raw_codepoint const & in ) { // Encode e.g. UCNs.
+		this->pass( in ); // Pass through. Loses UCN-ness, need to fix framework.
+		
+		if ( in < 0x80 ) {
+			this->pass( utf8_char( static_cast< std::uint8_t >( in ), in ) );
+	
+		} else { // convert ucn_acc to UTF-8
+			int unicode_remaining = 6; // number of UTF-8 trailer chars
+			for ( int shift = 31; in >> shift == 0; shift -= 5 ) -- unicode_remaining;
+	
+			this->pass( utf8_char( static_cast< std::uint8_t >( 0x7F80 >> unicode_remaining | in >> unicode_remaining * 6 ), in ) );
+			while ( unicode_remaining -- ) {
+				this->pass( utf8_char( static_cast< std::uint8_t >( 0x80 | ( ( in >> unicode_remaining * 6 ) & 0x3F ) ), in ) );
+			}
+		}
+	}
 	
 	void operator () ( raw_char const & c ) {
-		if ( this->lex_state() != lex_decode_state::raw && ( len != 0 || c >= 0x80 ) ) non_ascii( c );
+		if ( len != 0 || ( c >= 0x80 && this->lex_state() != lex_decode_state::raw ) ) non_ascii( c );
 		else this->pass( c );
 	}
 	void flush() {

@@ -85,7 +85,7 @@ int main( int argc, char *argv[] ) {
 		)
 	);
 	
-	auto && pile = cplus::pile< cplus::char_decoder, utf8_decoder, cplus::lexer >( common_pile );
+	auto && pile = cplus::pile< cplus::char_decoder, cplus::utf8_transcoder, cplus::lexer >( common_pile );
 
 	instantiate( std::make_shared< cplus::raw_text< std::string > >(
 		"#define __STDC__ 1\n"

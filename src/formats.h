@@ -62,7 +62,7 @@ struct multibyte_char : raw_char { using raw_char::raw_char; }; // Part of a raw
 struct utf8_char : multibyte_char { using multibyte_char::multibyte_char; };
 
 struct trigraph; // Undefined but used for delimiter.
-struct ucn;
+struct ucn : raw_codepoint { using raw_codepoint::raw_codepoint; };
 
 struct line_splice : construct
 	{ explicit line_splice( construct in_c = {} ) : construct( std::move( in_c ) ) {} };
