@@ -119,7 +119,7 @@ template< typename v >
 struct raw : construct {
 	v value;
 	raw( v in_v = {}, construct in_p = {} ) : construct( std::move( in_p ) ), value( std::move( in_v ) ) {}
-	operator v & () & { return value; }
+	raw & operator = ( v const & rhs ) & { value = rhs; return * this; }
 	operator v const & () const & { return value; }
 };
 typedef std::uint8_t char_t;
