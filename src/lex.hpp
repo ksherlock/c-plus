@@ -173,9 +173,9 @@ class lexer : public stage< output_iterator, lexer_config >,
 				} else if ( in == '\'' ) {
 					token.type = state = char_lit;
 				} else { // "other", such as a stray backslash
-					this->template diagnose< diagnose_policy::pass, error >(
-						( in <= 0x1F && ! char_in_set( char_set::space, in ) ) || ( in >= 0x7F && in <= 0x9F ),
-						in, "Stray control character (§2.3/2)." );
+					this->template diagnose< diagnose_policy::pass, error >( ( in <= 0x1F && ! char_in_set( char_set::space, in ) ) || in == 0x7F,
+						in, "Stray control character (§2.3/2)." ); // Problem: valid range stopping at 0x80 presumes UTF-8.
+					this->template diagnose< diagnose_policy::fatal, error >( in >= 0x80, in, "ICE: encoded bytes processed as ASCII." );
 					token.type = misc;
 					pass(); // chars not in alpha may still be catenated to an id or header-name
 				}
@@ -583,6 +583,7 @@ public:
 		}
 		CPLUS_FINALLY ( multibyte_reject(); ) // Set multibyte_count = 0 to accept the sequence.
 		
+		this->template diagnose< diagnose_policy::pass, error >( in <= 0x9F, in, "Stray control character (§2.3/2)." );
 		this->template diagnose< diagnose_policy::pass, error >( in >= 0xD800 && in <= 0xDFFF, in,
 			"This is a surrogate pair code point (§2.3/2). If specifying UTF-16, " // message assumes UTF-16 hasn't been encoded in UTF-8
 			"encode the desired Unicode character and the pair will be generated. Otherwise, try a hexadecimal escape sequence \"\\xDnnn\"." );
