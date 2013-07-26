@@ -98,16 +98,19 @@ class lexer : public stage< output_iterator, lexer_config >,
 		CPLUS_DO_FINALLY
 	}
 	
+	void flush_splices() { // Reinsert line splices seen during last token as whitespace, if preserve_space is set.
+		if ( splice_count == 0 ) return;
+		token.construct::operator = ( std::move( splice_first ) );
+		do token.s += "\\\n"; while ( -- splice_count );
+	}
+	
 	void general_path( raw_char const &in ) {
 		for (;;) switch ( state ) {
 		case initial:
 			state = after_newline;
 			
 		case ws: // every other state returns here after pass(), even if a space character hasn't been seen
-			if ( splice_count != 0 ) { // Reinsert line splices seen during last token as whitespace, if preserve_space is set.
-				token.construct::operator = ( std::move( splice_first ) );
-				do token.s += "\\\n"; while ( -- splice_count );
-			}
+			flush_splices();
 		case space_run:
 			if ( in == '\n' || in == '\r' ) { // quietly allow CR on the assumption it precedes LF.
 				if ( in_directive ) {
@@ -514,7 +517,10 @@ class lexer : public stage< output_iterator, lexer_config >,
 		}
 		pass();
 	punct_passed:
+		auto splice_count_back = splice_count;
+		splice_count = 0;
 		std::for_each( retry.begin() + match_size - 1, retry.end(), std::ref( * this ) ); // Retry non-matched punctuation and UTF-8 lead sequence.
+		splice_count = splice_count_back;
 	}
 	void header_name_retry() {
 		state = state_after_space = ws;
@@ -633,6 +639,7 @@ public:
 			if ( multibyte_seq.empty() ) multibyte_seq = multibyte_retrieve();
 			
 			while ( state == punct ) finish_punct();
+			flush_splices();
 		
 			if ( ! token.s.empty() ) pass();
 			token = { char_in_set( char_set::initial, in )? token_type::id : token_type::misc, std::move( multibyte_seq ), in };
