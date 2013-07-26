@@ -177,8 +177,6 @@ public:
 	using utf8_transcoder::decode_stage::decode_stage;
 	
 	void operator () ( raw_codepoint const & in ) { // Encode e.g. UCNs.
-		this->pass( in ); // Pass through. Loses UCN-ness, need to fix framework.
-		
 		if ( in < 0x80 ) {
 			this->pass( utf8_char( static_cast< std::uint8_t >( in ), in ) );
 	
@@ -191,6 +189,7 @@ public:
 				this->pass( utf8_char( static_cast< std::uint8_t >( 0x80 | ( ( in >> unicode_remaining * 6 ) & 0x3F ) ), in ) );
 			}
 		}
+		this->pass( in ); // Pass through. Loses UCN-ness, need to fix framework.
 	}
 	
 	void operator () ( raw_char const & c ) {
