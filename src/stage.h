@@ -23,13 +23,13 @@ namespace impl {
 	struct is_output_iterable : std::false_type {};
 	
 	template< typename output, typename v >
-	struct is_output_iterable< output, v, typename util::mention< decltype( * std::declval< output & >() ++ = std::declval< v >() ) >::type > : std::true_type {};
+	struct is_output_iterable< output, v, decltype(void( * std::declval< output & >() ++ = std::declval< v >() )) > : std::true_type {};
 	
 	template< typename base, typename, typename = void >
 	struct is_callable : std::false_type {};
 	
 	template< typename base, typename v >
-	struct is_callable< base, v, typename util::mention<decltype( std::declval< base & >() ( std::declval< v >() ) )>::type > : std::true_type {};
+	struct is_callable< base, v, decltype(void( std::declval< base & >() ( std::declval< v >() ) )) > : std::true_type {};
 	
 	template< typename base, typename v > // GCC workaround: usual trait definition style produces strange, inconsistent results.
 	constexpr bool is_passable_fn( ... ) { return false; }
@@ -93,8 +93,8 @@ public:
 	get_config() { return std::get< util::tuple_index< client &, decltype( configs ) >::value >( configs ); }
 	
 	template< typename client >
-	typename std::enable_if< ( typename util::mention< decltype( std::declval< base >().template get_config< client >() ) >::type(),
-		util::tuple_index< client &, decltype( configs ) >::value == ( sizeof ... ( config_types ) ) ), client & >::type
+	typename std::enable_if< util::tuple_index< client &, decltype( configs ) >::value == ( sizeof ... ( config_types ) ),
+		decltype( std::declval< base >().template get_config< client >() ) >::type
 	get_config() { return base::template get_config< client >(); }
 	
 	template< pass_policy policy = pass_policy::mandatory >
@@ -189,7 +189,7 @@ struct stage_base {
 	operator () ( v && val ) { cont.::std::decay< output_type >::type::stage::pass( std::forward< v >( val ) ); }
 	
 	template< typename client >
-	typename std::enable_if< ( typename util::mention< decltype( std::declval< output_type & >().template get_config< client >() ) >::type(), true ), client & >::type
+	decltype( std::declval< output_type & >().template get_config< client >() )
 	get_config() { return cont.template get_config< client >(); }
 };
 

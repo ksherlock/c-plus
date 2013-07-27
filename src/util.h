@@ -24,10 +24,6 @@ typedef TYPENAME ## _import_base :: TYPENAME TYPENAME;
 
 namespace cplus { namespace util {
 
-template< typename ... >
-struct mention
-	{ typedef void type; };
-
 struct poor_conversion {
 	template< typename t >
 	poor_conversion( t const & ) {}
