@@ -139,7 +139,7 @@ public:
 				}
 				this->template pass< pass_policy::optional >( delimiter< struct ucn, delimiter_sense::open >( input_buffer.front() ) );
 				this->template pass< pass_policy::optional >( delimiter< struct ucn, delimiter_sense::close >( std::move( input_buffer.back() ) ) );
-				this->template pass< pass_policy::optional >( cplus::ucn( ucn_acc, std::move( input_buffer.front() ) ) );
+				pass( cplus::ucn( ucn_acc, std::move( input_buffer.front() ) ) );
 				CPLUS_DO_FINALLY
 			}
 			return;
@@ -176,7 +176,8 @@ class utf8_transcoder : public decode_stage< output > {
 public:
 	using utf8_transcoder::decode_stage::decode_stage;
 	
-	void operator () ( raw_codepoint const & in ) { // Encode e.g. UCNs.
+	template< typename cont >
+	void operator () ( raw_codepoint const & in, cont && propagate ) { // Encode e.g. UCNs.
 		if ( in < 0x80 ) {
 			this->pass( utf8_char( static_cast< std::uint8_t >( in ), in ) );
 	
@@ -189,7 +190,7 @@ public:
 				this->pass( utf8_char( static_cast< std::uint8_t >( 0x80 | ( ( in >> unicode_remaining * 6 ) & 0x3F ) ), in ) );
 			}
 		}
-		this->pass( in ); // Pass through. Loses UCN-ness, need to fix framework.
+		propagate();
 	}
 	
 	void operator () ( raw_char const & c ) {
