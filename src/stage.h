@@ -18,13 +18,10 @@ struct passed_exception : std::logic_error { passed_exception() : std::logic_err
 enum class pass_policy { mandatory, optional, enable_if };
 enum class diagnose_policy { none, pass, fatal }; // Apply to either sender or receiver. Sender cannot specify none.
 
+void finalize( util::poor_conversion ) {} // fallback overload, worse than derived-to-base conversion
+void next_stage( util::poor_conversion );
+
 namespace impl {
-	template< typename base, typename v, typename = void >
-	struct is_output_iterable : std::false_type {};
-	
-	template< typename output, typename v >
-	struct is_output_iterable< output, v, decltype(void( * std::declval< output & >() ++ = std::declval< v >() )) > : std::true_type {};
-	
 	template< typename sig, typename = void >
 	struct is_callable : std::false_type {};
 	
@@ -32,32 +29,24 @@ namespace impl {
 	struct is_callable< ftor( arg ... ), decltype(void( std::declval< ftor & >() ( std::declval< arg >() ... ) )) > : std::true_type {};
 	
 	template< typename base, typename v > // GCC workaround: usual trait definition style produces strange, inconsistent results.
-	constexpr bool is_passable_fn( ... ) { return false; }
+	constexpr bool is_passable_fn( ... ) { static_assert ( sizeof (base) > 0, "Pass to incomplete type." ); return false; }
 	
-	template< typename base, typename v, pass_policy policy = pass_policy::enable_if >
-	constexpr decltype ( std::declval< typename std::decay< base >::type::stage & >().template pass< policy >( std::declval< v >() ), true )
+	template< typename base, typename v >
+	constexpr typename std::enable_if< std::is_void< decltype( next_stage( std::declval< base & >() ).template pass< pass_policy::enable_if >( std::declval< v >() ) ) >::value, bool >::type
 	is_passable_fn( int ) { return true; }
 	
-	template< typename base, typename v, bool r = is_passable_fn< base, v >(0) >
-	struct is_passable : std::integral_constant< bool, r > {};
+	template< typename base, typename v, typename q = void >
+	struct is_passable : std::integral_constant< bool, is_passable_fn< base, v >(0) > {};
 	
-	void next_stage( util::poor_conversion );
-	
-	template< typename t >
-	typename t::stage & next_stage( t & s ) { return s; }
-	
-	template< typename t >
-	typename std::enable_if< std::is_void< decltype( impl::next_stage( std::declval< t & >() ) ) >::value,
-		typename decltype( std::declval< t >().cont )::stage & >::type
-	next_stage( t & s ) { return s.cont; }
+	template< typename base, typename v >
+	struct is_passable< base, v, decltype( next_stage( std::declval< base & >() ).template pass< pass_policy::enable_if >( std::declval< v >() ) ) > : std::true_type {};
 }
-
-void finalize( util::poor_conversion const & ) {} // fallback overload, worse than derived-to-base conversion
 
 // Adaptor for deriving one stage from another and using base's output iterator.
 template< typename base_type, typename ... config_types >
 class derived_stage : public base_type {
 	std::tuple< config_types const & ... > configs;
+	friend derived_stage & next_stage( derived_stage & o ) { return o; }
 	
 	void operator () () = delete; // pass() is a requirement for communication up the stack.
 	
@@ -70,14 +59,15 @@ class derived_stage : public base_type {
 	pass_or_diagnose( t && o ) { diagnose< diagnose_policy::pass, t >( true, std::forward< t >( o ) ); }
 	
 	template< typename t >
-	typename std::enable_if< impl::is_passable< decltype( impl::next_stage( std::declval< base_type & >() ) ), t >::value >::type
-	bypass( t && o ) { impl::next_stage< base_type >( * this ).pass( std::forward< t >( o ) ); }
+	typename std::enable_if< impl::is_passable< base_type, t >::value >::type
+	bypass( t && o ) { next_stage( static_cast< base_type & >( * this ) ).pass( std::forward< t >( o ) ); }
 	
 	struct tag {};
+	
 public:
 	typedef base_type base;
 	typedef derived_stage stage;
-
+	
 	void flush() {}
 	
 	template< typename ... args >
@@ -112,7 +102,7 @@ public:
 	get_config() { return base::template get_config< client >(); }
 	
 	template< pass_policy policy = pass_policy::mandatory >
-	static typename std::enable_if< policy != pass_policy::enable_if >::type // to see overload resolution errors, specify enable_if.
+	static typename std::enable_if< policy != pass_policy::enable_if >::type // To see overload resolution errors, specify enable_if.
 	pass( util::poor_conversion ) { static_assert( policy == pass_policy::optional, "invalid pass argument" ); }
 	
 	template< pass_policy policy = pass_policy::mandatory, typename arg >
@@ -122,7 +112,7 @@ public:
 		catch ( passed_exception & ) {}
 	
 	template< pass_policy = pass_policy::mandatory, typename arg >
-	typename std::enable_if< impl::is_callable< base_type( arg, void(*)() ) >::value, decltype( std::declval< derived_stage >().bypass( std::declval< arg >() ) ) >::type
+	typename std::enable_if< impl::is_callable< base_type( arg, void(*)() ) >::value && impl::is_passable< base_type, arg >::value >::type
 	pass( arg && a ) & // Pass to immediate superclass with a functor representing the rest of the stack.
 		try { this->base_type::operator () ( std::forward< arg >( a ), [&] { this->bypass( std::forward< arg >( a ) ); } ); }
 		catch ( passed_exception & ) {}
@@ -130,7 +120,7 @@ public:
 	template< pass_policy policy = pass_policy::mandatory, typename arg >
 	typename std::enable_if< ! impl::is_callable< base_type( arg ) >::value && ! impl::is_callable< base_type( arg, void(*)() ) >::value && impl::is_passable< base_type, arg >::value >::type
 	pass( arg && a ) & // Pass to derived_stage recursive base.
-		{ this->base_type::stage::template pass< policy >( std::forward< arg >( a ) ); }
+		{ bypass( std::forward< arg >( a ) ); }
 	
 	template< pass_policy policy = pass_policy::mandatory, typename arg >
 	typename std::enable_if< policy != pass_policy::enable_if || impl::is_callable< base_type( arg ) >::value || impl::is_passable< base_type, arg >::value >::type
@@ -190,31 +180,24 @@ template< typename output_type >
 struct stage_base {
 	output_type cont;
 	
+	friend decltype( next_stage( std::declval< output_type & >() ) )
+	next_stage( stage_base & o ) { return next_stage( o.cont ); }
+	
 	template< typename ... args >
 	stage_base( args && ... a ) : cont( std::forward< args >( a ) ... ) {}
 	
-	template< typename v >
-	typename std::enable_if< impl::is_output_iterable< output_type, v >::value >::type
-	operator () ( v && val )
-		{ * cont ++ = std::forward< v >( val ); }
-	
 	template< typename ... arg >
-	typename std::enable_if< impl::is_callable< output_type( arg ... ) >::value >::type
+	typename std::enable_if< impl::is_callable< output_type & ( arg ... ) >::value >::type
 	operator () ( arg && ... a )
-		try { cont( std::forward< arg >( a ) ... ); }
-		catch ( passed_exception & ) {}
-	
-	template< typename v >
-	typename std::enable_if< ! impl::is_callable< output_type( v ) >::value && ! impl::is_callable< output_type( v, void(*)() ) >::value && impl::is_passable< output_type, v >::value >::type
-	operator () ( v && val ) { cont.::std::decay< output_type >::type::stage::pass( std::forward< v >( val ) ); }
+		{ cont( std::forward< arg >( a ) ... ); }
 	
 	template< typename client >
 	decltype( std::declval< output_type & >().template get_config< client >() )
 	get_config() { return cont.template get_config< client >(); }
 };
 
-template< typename output_iterator, typename ... config_types >
-using stage = derived_stage< stage_base< output_iterator >, config_types ... >;
+template< typename output, typename ... config_types >
+using stage = derived_stage< stage_base< output >, config_types ... >;
 
 template< typename s >
 typename std::enable_if< ! std::is_same< typename s::base, typename s::stage_base >::value >::type

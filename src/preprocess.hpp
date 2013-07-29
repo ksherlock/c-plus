@@ -143,7 +143,7 @@ class preprocessor
 			if ( preserve_defined_operator ) macros.erase( preserver_it ); // #undef defined
 		)
 		
-		auto filter = pile< macro_filter >( std::back_inserter( ret ) );
+		auto filter = pile< macro_filter >( [ &ret ]( token && in ) { ret.push_back( std::move( in ) ); } );
 		pile< macro_context >(
 			static_cast< macro_context_info & >( * this ),
 			util::function< void( token && ), void( error && ) >( filter.template pass_function< token && >(), this->template pass_function< error && >() )
