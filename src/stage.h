@@ -174,16 +174,6 @@ public:
 	}
 };
 
-namespace impl {
-	template< typename t, typename = void >
-	struct strip_derived_stage { typedef t type; };
-	// Remove derived_stage interface from output types to simplify making *this coincide with a specialization from pile().
-	template< typename t >
-	struct strip_derived_stage< derived_stage< t > & > { typedef t & type; };
-	template< typename t >
-	struct strip_derived_stage< derived_stage< t > > { typedef t type; };
-}
-
 // Non-virtual abstract base class.
 template< typename output_type >
 struct stage_base {
@@ -240,8 +230,13 @@ template< typename cont, template< typename ... > class ... stages >
 struct stack_stages;
 
 template< typename cont >
-struct stack_stages< cont >
-	{ typedef typename impl::strip_derived_stage< cont >::type type; };
+struct stack_stages< cont > { typedef cont type; };
+
+// Remove derived_stage interface from output types to help make *this coincide with a return value from pile().
+template< typename cont >
+struct stack_stages< derived_stage< cont > > { typedef cont type; };
+template< typename cont >
+struct stack_stages< derived_stage< cont > & > { typedef cont &type; };
 
 template< typename cont, template< typename ... > class stage, template< typename ... > class ... rem >
 struct stack_stages< cont, stage, rem ... >
