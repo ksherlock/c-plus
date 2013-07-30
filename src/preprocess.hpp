@@ -623,8 +623,8 @@ public:
 	template< typename config_ret_type >
 	config_ret_type &get_config() {
 		typedef typename std::remove_const< config_ret_type >::type config_type;
-		bool inserting = pragma_filter::base::registry.count( typeid( config_type ) ) == 0;
-		config_type &ret = pragma_filter::base::template get_config< config_type >();
+		bool inserting = pragma_filter::config_manager::registry.count( typeid( config_type ) ) == 0;
+		config_type &ret = pragma_filter::config_manager::template get_config< config_type >();
 		if ( inserting ) {
 			pragmas.insert( ret.pragma_handlers() );
 		}

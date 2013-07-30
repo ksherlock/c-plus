@@ -18,8 +18,17 @@ struct passed_exception : std::logic_error { passed_exception() : std::logic_err
 enum class pass_policy { mandatory, optional, enable_if };
 enum class diagnose_policy { none, pass, fatal }; // Apply to either sender or receiver. Sender cannot specify none.
 
-void finalize( util::poor_conversion ) {} // fallback overload, worse than derived-to-base conversion
-void next_stage( util::poor_conversion );
+// These functions work even without a stage interface.
+void next_stage( util::poor_conversion ); // Fallback overloads, worse than derived-to-base conversion.
+
+void finalize( util::poor_conversion ) {}
+template< typename s >
+decltype( std::declval< s & >().flush() )
+finalize( s & o ) {
+	try { o.flush(); }
+	catch ( passed_exception & ) {}
+	finalize( next_stage( o ) );
+}
 
 namespace impl {
 	template< typename sig, typename = void >
@@ -43,10 +52,11 @@ namespace impl {
 }
 
 // Adaptor for deriving one stage from another and using base's output iterator.
-template< typename base_type, typename ... config_types >
-class derived_stage : public base_type {
+template< typename base, typename ... config_types >
+class derived_stage : public base {
 	std::tuple< config_types const & ... > configs;
 	friend derived_stage & next_stage( derived_stage & o ) { return o; }
+	friend void finalize( derived_stage & o ) { finalize( static_cast< base & >( o ) ); }
 	
 	void operator () () = delete; // pass() is a requirement for communication up the stack.
 	
@@ -59,13 +69,12 @@ class derived_stage : public base_type {
 	pass_or_diagnose( t && o ) { diagnose< diagnose_policy::pass, t >( true, std::forward< t >( o ) ); }
 	
 	template< typename t >
-	typename std::enable_if< impl::is_passable< base_type, t >::value >::type
-	bypass( t && o ) { next_stage( static_cast< base_type & >( * this ) ).pass( std::forward< t >( o ) ); }
+	typename std::enable_if< impl::is_passable< base, t >::value >::type
+	bypass( t && o ) { next_stage( static_cast< base & >( * this ) ).pass( std::forward< t >( o ) ); }
 	
 	struct tag {};
 	
 public:
-	typedef base_type base;
 	typedef derived_stage stage;
 	
 	void flush() {}
@@ -106,38 +115,38 @@ public:
 	pass( util::poor_conversion ) { static_assert( policy == pass_policy::optional, "invalid pass argument" ); }
 	
 	template< pass_policy policy = pass_policy::mandatory, typename arg >
-	typename std::enable_if< impl::is_callable< base_type( arg ) >::value >::type
+	typename std::enable_if< impl::is_callable< base( arg ) >::value >::type
 	pass( arg && a ) & // Pass to immediate superclass.
-		try { this->base_type::operator () ( std::forward< arg >( a ) ); }
+		try { this->base::operator () ( std::forward< arg >( a ) ); }
 		catch ( passed_exception & ) {}
 	
 	template< pass_policy = pass_policy::mandatory, typename arg >
-	typename std::enable_if< impl::is_callable< base_type( arg, void(*)() ) >::value && impl::is_passable< base_type, arg >::value >::type
+	typename std::enable_if< impl::is_callable< base( arg, void(*)() ) >::value && impl::is_passable< base, arg >::value >::type
 	pass( arg && a ) & // Pass to immediate superclass with a functor representing the rest of the stack.
-		try { this->base_type::operator () ( std::forward< arg >( a ), [&] { this->bypass( std::forward< arg >( a ) ); } ); }
+		try { this->base::operator () ( std::forward< arg >( a ), [&] { bypass( std::forward< arg >( a ) ); } ); }
 		catch ( passed_exception & ) {}
 	
 	template< pass_policy policy = pass_policy::mandatory, typename arg >
-	typename std::enable_if< ! impl::is_callable< base_type( arg ) >::value && ! impl::is_callable< base_type( arg, void(*)() ) >::value && impl::is_passable< base_type, arg >::value >::type
+	typename std::enable_if< ! impl::is_callable< base( arg ) >::value && ! impl::is_callable< base( arg, void(*)() ) >::value && impl::is_passable< base, arg >::value >::type
 	pass( arg && a ) & // Pass to derived_stage recursive base.
 		{ bypass( std::forward< arg >( a ) ); }
 	
 	template< pass_policy policy = pass_policy::mandatory, typename arg >
-	typename std::enable_if< policy != pass_policy::enable_if || impl::is_callable< base_type( arg ) >::value || impl::is_passable< base_type, arg >::value >::type
+	typename std::enable_if< policy != pass_policy::enable_if || impl::is_callable< base( arg ) >::value || impl::is_passable< base, arg >::value >::type
 	pass( arg && a ) && {
 		pass< policy >( std::forward< arg >( a ) );
 		finalize( * this );
 	}
 	
 	template< pass_policy policy = pass_policy::mandatory, typename iter >
-	typename std::enable_if< policy != pass_policy::enable_if || impl::is_callable< base_type( typename std::iterator_traits< iter >::reference ) >::value
-							|| impl::is_passable< base_type, typename std::iterator_traits< iter >::reference >::value >::type
+	typename std::enable_if< policy != pass_policy::enable_if || impl::is_callable< base( typename std::iterator_traits< iter >::reference ) >::value
+							|| impl::is_passable< base, typename std::iterator_traits< iter >::reference >::value >::type
 	pass( iter first, iter last ) &
 		{ for ( ; first != last; ++ first ) pass< policy >( * first ); }
 	
 	template< pass_policy policy = pass_policy::mandatory, typename iter >
-	typename std::enable_if< policy != pass_policy::enable_if || impl::is_callable< base_type( typename std::iterator_traits< iter >::reference ) >::value
-							|| impl::is_passable< base_type, typename std::iterator_traits< iter >::reference >::value >::type
+	typename std::enable_if< policy != pass_policy::enable_if || impl::is_callable< base( typename std::iterator_traits< iter >::reference ) >::value
+							|| impl::is_passable< base, typename std::iterator_traits< iter >::reference >::value >::type
 	pass( iter first, iter last ) && {
 		pass< policy >( first, last );
 		finalize( * this );
@@ -182,6 +191,8 @@ struct stage_base {
 	
 	friend decltype( next_stage( std::declval< output_type & >() ) )
 	next_stage( stage_base & o ) { return next_stage( o.cont ); }
+	friend void finalize( stage_base & o )
+		{ if ( ! std::is_reference< output_type >::value ) finalize( o.cont ); }
 	
 	template< typename ... args >
 	stage_base( args && ... a ) : cont( std::forward< args >( a ) ... ) {}
@@ -198,26 +209,6 @@ struct stage_base {
 
 template< typename output, typename ... config_types >
 using stage = derived_stage< stage_base< output >, config_types ... >;
-
-template< typename s >
-typename std::enable_if< ! std::is_same< typename s::base, typename s::stage_base >::value >::type
-finalize( s &o ) {
-	try {
-		o.flush();
-	} catch ( passed_exception & ) {}
-	finalize( static_cast< typename s::base & >( o ) );
-}
-
-/*	Each pipeline step chains to finalize for the next one. When an iterator without
-	finalize is reached, synchronization stops. That iterator should be the last. */
-template< typename s >
-typename std::enable_if< std::is_same< typename s::base, typename s::stage_base >::value >::type
-finalize( s &o ) {
-	try {
-		o.flush();
-	} catch ( passed_exception & ) {}
-	if ( ! std::is_reference< decltype( o.cont ) >::value ) finalize( o.cont ); // Only finalizing rvalues would be more consistent, but error-prone.
-}
 
 // Stage parameterization and pragma distribution.
 struct config_base : util::abc {
