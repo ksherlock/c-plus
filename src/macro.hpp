@@ -405,8 +405,9 @@ template< typename output >
 struct macro_filter : public stage< output > {
 	using macro_filter::stage::stage;
 	
-	void operator () ( token && in )
-		{ if ( ! in.s.empty() ) this->pass( std::move( in ) ); } // Filter out placemarkers and recursion stops.
+	template< typename cont >
+	void operator () ( token && in, cont && propagate )
+		{ if ( ! in.s.empty() ) propagate(); } // Filter out placemarkers and recursion stops.
 };
 
 template< typename output_iterator >

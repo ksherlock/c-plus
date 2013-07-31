@@ -76,7 +76,12 @@ int main( int argc, char *argv[] ) {
 	
 	auto && common_pile = cplus::pile< cplus::preprocessor, cplus::space_condenser, cplus::pragma_filter > (
 		cplus::util::amalgamate(
-			[]( cplus::token &&token ){ std::fwrite( token.s.c_str(), 1, token.s.size(), stdout ); std::fwrite( "·", 1, std::strlen( "·" ), stdout ); },
+			[]( cplus::token &&token ) {
+				std::fwrite( token.s.c_str(), 1, token.s.size(), stdout );
+				std::cout << '~' << token.type;
+				if ( ! token.get_parent< input_source >() ) std::cout << 'X';
+				std::fwrite( "·", 1, std::strlen( "·" ), stdout );
+			},
 			[]( cplus::error && err ) {
 				std::clog << err.what() << '\n';
 				if ( ! err.offender().get_parent() ) std::cerr << "(no source info)\n";
@@ -88,12 +93,12 @@ int main( int argc, char *argv[] ) {
 	auto && pile = cplus::pile< cplus::char_decoder, cplus::utf8_transcoder, cplus::lexer >( common_pile );
 
 	instantiate( std::make_shared< cplus::raw_text< std::string > >(
+		"#pragma preserve_space 1\n"
 		"#define __STDC__ 1\n"
 		"#define __cplusplus 199711L //201103L\n"
 		"#define __i386__ 1\n"
 		"#define __LP64__ 1\n"
 		"#define __GNUC__ 4\n"
-		"#pragma preserve_space 1\n"
 		"#pragma system_path "
 			"\"/usr/local/lib/gcc/x86_64-apple-darwin12.4.0/4.9.0/include/\" "
 			"\"/usr/include/\" \"/usr/include/sys/\" \"/usr/local/include/\" "
@@ -101,7 +106,7 @@ int main( int argc, char *argv[] ) {
 			"\"/usr/local/include/c++/4.9.0/x86_64-apple-darwin12.4.0/i386/\"\n"
 	), pile );
 	
-	pile.pass( std::istreambuf_iterator< char >{ std::cin }, std::istreambuf_iterator< char >{} );
+	pile.pass< pass_policy::mandatory, std::istreambuf_iterator< char >, cplus::raw_char >( { std::cin }, {} );
 	finalize( pile );
 	finalize( common_pile );
 }

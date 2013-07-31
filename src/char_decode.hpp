@@ -49,7 +49,8 @@ public:
 		CPLUS_DO_FINALLY
 	}
 	
-	void operator () ( raw_char const & in ) {
+	template< typename cont >
+	void operator () ( raw_char const & in, cont && propagate ) {
 		for (;; flush() ) switch ( state ) { // continue; means unshift and retry from normal state.
 		case normal:
 			switch ( in ) {
@@ -67,7 +68,7 @@ public:
 				return;
 				
 			default: normal:
-				return pass( in );
+				return propagate(); // This preserves argument type, but input_buffer does not.
 			}
 		
 		case cr: // Discard a \n following \r.
@@ -153,7 +154,8 @@ class utf8_transcoder : public decode_stage< output > {
 	char32_t min;
 	int len = 0;
 	
-	void non_ascii( raw_char const &c ) { // Decode outside operator () to keep ASCII fast.
+	template< typename cont >
+	void non_ascii( raw_char const &c, cont && propagate ) { // Decode outside operator () to keep ASCII fast.
 		this->pass( utf8_char( c, c ) ); // Pass through.
 		
 		if ( len == 0 ) {
@@ -165,7 +167,7 @@ class utf8_transcoder : public decode_stage< output > {
 		} else {
 			if ( c < 0x80 || c >= 0xC0 ) {
 				flush(); // Abort and reset.
-				return (*this) ( c ); // Retry.
+				return propagate(); // Retry.
 			}
 			result = result << 6 | ( c & 0x3F );
 			if ( -- len != 0 ) return;
@@ -193,9 +195,10 @@ public:
 		propagate();
 	}
 	
-	void operator () ( raw_char const & c ) {
-		if ( len != 0 || ( c >= 0x80 && this->lex_state() != lex_decode_state::raw ) ) non_ascii( c );
-		else this->pass( c );
+	template< typename cont >
+	void operator () ( raw_char const & c, cont && propagate ) {
+		if ( len != 0 || ( c >= 0x80 && this->lex_state() != lex_decode_state::raw ) ) non_ascii( c, std::forward< cont >( propagate ) );
+		else propagate();
 	}
 	void flush() {
 		CPLUS_FINALLY (

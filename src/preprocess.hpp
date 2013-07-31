@@ -475,6 +475,11 @@ class preprocessor
 	void guard_current_header()
 		{ guarded_headers.insert( { guard_detect.name, std::move( guard_detect.guard ) } ); }
 	
+	token const & directive_id() {
+		auto directive_it = input.begin() + 1; // First character is #.
+		return pp_constants::skip_space( directive_it, input.end() ) != input.end()? * directive_it : pp_constants::placemarker;
+	}
+	
 public:
 	template< typename ... args >
 	preprocessor( args && ... a ) : preprocessor( {}, std::forward< args >( a ) ... ) {}
@@ -515,20 +520,17 @@ public:
 		this->cont.template get_config< pp_master_config >().master = this; // restrictive to assume cont has config manager
 	}
 	
-	token const & directive_id() {
-		auto directive_it = input.begin() + 1; // First character is #.
-		return pp_constants::skip_space( directive_it, input.end() ) != input.end()? * directive_it : pp_constants::placemarker;
-	}
-	
-	void operator () ( delimiter< struct directive, delimiter_sense::open > in ) {
+	template< typename cont >
+	void operator () ( delimiter< struct directive, delimiter_sense::open > in, cont && propagate ) {
 		this->template diagnose< diagnose_policy::pass, error >( this->paren_depth != 0, in, "A macro invocation cannot span a directive (§16.3/11)." );
 		
 		if ( input.empty() ) input.push_back( pp_constants::placemarker ); // Ensure there is whitespace before the directive.
 		this->preprocessor::macro_context::flush(); // Flush uncalled function.
 		directive = true;
-		this->template pass< pass_policy::optional >( std::move( in ) );
+		propagate();
 	}
-	void operator () ( delimiter< struct directive, delimiter_sense::close > in ) {
+	template< typename cont >
+	void operator () ( delimiter< struct directive, delimiter_sense::close > in, cont && propagate ) {
 		directive = false;
 		if ( state == normal ) {
 			handle_directive();
@@ -561,10 +563,11 @@ public:
 				-- skip_depth;
 			}
 		}
-		this->template pass< pass_policy::optional >( std::move( in ) );
+		propagate();
 	}
 	
-	void operator () ( token && in ) {
+	template< typename cont >
+	void operator () ( token && in, cont && propagate ) {
 		switch ( state ) {
 		case entering: // one-shot state simply inserts whitespace #line directive if preserving space
 			if ( this->token_config.preserve_space && in.get_parent< input_source >() ) {
@@ -585,7 +588,7 @@ public:
 				if ( guard_detect.depth == conditional_depth && in.type != token_type::ws ) {
 					guard_detect.valid = false; // Anything besides a directive outside guard cancels guard detection.
 				}
-				this->pass( std::move( in ) );
+				propagate(); // Preserve argument type except in directives.
 			} else { // Accumulate tokens of a complete directive, then execute.
 				input.push_back( std::move( in ) );
 			}
@@ -635,7 +638,8 @@ public:
 	pragma_filter( args && ... a )
 		: pragma_filter::derived_stage( std::forward< args >( a ) ... ), state( normal ) {}
 	
-	void operator() ( token &&in ) {
+	template< typename cont >
+	void operator() ( token &&in, cont && propagate ) {
 		if ( in.type == token_type::ws ) {
 			this->pass( std::move( in ) );
 			return;
@@ -644,7 +648,7 @@ public:
 		case normal:		if ( in == pp_constants::pragma_operator ) {
 								state = open_paren;
 								pragma_token = std::move( in );
-							} else this->pass( std::move( in ) );
+							} else propagate();
 							return;
 							
 		case open_paren:	state = normal;

@@ -7,7 +7,6 @@
 #include "util.h"
 
 #include <typeindex>
-#include <fstream>
 #include <memory> // For unique_ptr owning configs.
 #include <map>
 
@@ -68,9 +67,9 @@ class derived_stage : public base {
 	typename std::enable_if< std::is_base_of< std::exception, typename std::decay< t >::type >::value >::type
 	pass_or_diagnose( t && o ) { diagnose< diagnose_policy::pass, t >( true, std::forward< t >( o ) ); }
 	
-	template< typename t >
-	typename std::enable_if< impl::is_passable< base, t >::value >::type
-	bypass( t && o ) { next_stage( static_cast< base & >( * this ) ).pass( std::forward< t >( o ) ); }
+	template< pass_policy policy = pass_policy::mandatory, typename t >
+	typename std::enable_if< policy == pass_policy::optional || impl::is_passable< base, t >::value >::type
+	bypass( t && o ) { next_stage( static_cast< base & >( * this ) ).template pass< policy >( std::forward< t >( o ) ); }
 	
 	struct tag {};
 	
@@ -114,19 +113,19 @@ public:
 	static typename std::enable_if< policy != pass_policy::enable_if >::type // To see overload resolution errors, specify enable_if.
 	pass( util::poor_conversion ) { static_assert( policy == pass_policy::optional, "invalid pass argument" ); }
 	
-	template< pass_policy policy = pass_policy::mandatory, typename arg >
+	template< pass_policy = pass_policy::mandatory, typename arg >
 	typename std::enable_if< impl::is_callable< base( arg ) >::value >::type
 	pass( arg && a ) & // Pass to immediate superclass.
 		try { this->base::operator () ( std::forward< arg >( a ) ); }
 		catch ( passed_exception & ) {}
 	
-	template< pass_policy = pass_policy::mandatory, typename arg >
-	typename std::enable_if< impl::is_callable< base( arg, void(*)() ) >::value && impl::is_passable< base, arg >::value >::type
+	template< pass_policy policy = pass_policy::mandatory, typename arg >
+	typename std::enable_if< impl::is_callable< base( arg, void(*)() ) >::value && ( policy == pass_policy::optional || impl::is_passable< base, arg >::value ) >::type
 	pass( arg && a ) & // Pass to immediate superclass with a functor representing the rest of the stack.
-		try { this->base::operator () ( std::forward< arg >( a ), [&] { bypass( std::forward< arg >( a ) ); } ); }
+		try { this->base::operator () ( std::forward< arg >( a ), [&] { bypass< policy >( std::forward< arg >( a ) ); } ); }
 		catch ( passed_exception & ) {}
 	
-	template< pass_policy policy = pass_policy::mandatory, typename arg >
+	template< pass_policy = pass_policy::mandatory, typename arg >
 	typename std::enable_if< ! impl::is_callable< base( arg ) >::value && ! impl::is_callable< base( arg, void(*)() ) >::value && impl::is_passable< base, arg >::value >::type
 	pass( arg && a ) & // Pass to derived_stage recursive base.
 		{ bypass( std::forward< arg >( a ) ); }
@@ -138,17 +137,15 @@ public:
 		finalize( * this );
 	}
 	
-	template< pass_policy policy = pass_policy::mandatory, typename iter >
-	typename std::enable_if< policy != pass_policy::enable_if || impl::is_callable< base( typename std::iterator_traits< iter >::reference ) >::value
-							|| impl::is_passable< base, typename std::iterator_traits< iter >::reference >::value >::type
+	template< pass_policy policy = pass_policy::mandatory, typename iter, typename val = typename std::iterator_traits< iter >::reference >
+	typename std::enable_if< policy != pass_policy::enable_if || impl::is_callable< base( val ) >::value || impl::is_passable< base, val >::value >::type
 	pass( iter first, iter last ) &
-		{ for ( ; first != last; ++ first ) pass< policy >( * first ); }
+		{ for ( ; first != last; ++ first ) pass< policy >( static_cast< val >( * first ) ); }
 	
-	template< pass_policy policy = pass_policy::mandatory, typename iter >
-	typename std::enable_if< policy != pass_policy::enable_if || impl::is_callable< base( typename std::iterator_traits< iter >::reference ) >::value
-							|| impl::is_passable< base, typename std::iterator_traits< iter >::reference >::value >::type
+	template< pass_policy policy = pass_policy::mandatory, typename iter, typename val = typename std::iterator_traits< iter >::reference >
+	typename std::enable_if< policy != pass_policy::enable_if || impl::is_callable< base( val ) >::value || impl::is_passable< base, val >::value >::type
 	pass( iter first, iter last ) && {
-		pass< policy >( first, last );
+		pass< policy, iter, val >( first, last );
 		finalize( * this );
 	}
 	
